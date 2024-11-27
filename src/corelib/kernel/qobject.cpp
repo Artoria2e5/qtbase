@@ -101,13 +101,14 @@ static int *queuedConnectionTypes(const QMetaMethod &method)
     return typeIds;
 }
 
+// ### Future work: replace with an array of QMetaType or QtPrivate::QMetaTypeInterface *
 static int *queuedConnectionTypes(const QArgumentType *argumentTypes, int argc)
 {
     auto types = std::make_unique<int[]>(argc + 1);
     for (int i = 0; i < argc; ++i) {
         const QArgumentType &type = argumentTypes[i];
-        if (type.type())
-            types[i] = type.type();
+        if (type.metaType().isValid())
+            types[i] = type.metaType().id();
         else if (type.name().endsWith('*'))
             types[i] = QMetaType::VoidStar;
         else
@@ -151,6 +152,7 @@ void (*QAbstractDeclarativeData::setWidgetParent)(QObject *, QObject *) = nullpt
 
 QObjectData::~QObjectData() {}
 
+QT7_ONLY(const)
 QMetaObject *QObjectData::dynamicMetaObject() const
 {
     return metaObject->toDynamicMetaObject(q_ptr);
@@ -1288,6 +1290,17 @@ QString QObject::objectName() const
 }
 
 /*!
+    \internal
+    Only use if you know nothing can be bound yet. Usually used for
+    internal objects that do get names.
+*/
+void QObjectPrivate::setObjectNameWithoutBindings(const QString &name)
+{
+    ensureExtraData();
+    extraData->objectName.setValueBypassingBindings(name);
+}
+
+/*!
     \fn void QObject::setObjectName(const QString &name)
     Sets the object's name to \a name.
 */
@@ -1738,8 +1751,8 @@ void QObjectPrivate::setThreadData_helper(QThreadData *currentData, QThreadData 
     }
 
     // move posted events
-    int eventsMoved = 0;
-    for (int i = 0; i < currentData->postEventList.size(); ++i) {
+    qsizetype eventsMoved = 0;
+    for (qsizetype i = 0; i < currentData->postEventList.size(); ++i) {
         const QPostEvent &pe = currentData->postEventList.at(i);
         if (!pe.event)
             continue;
@@ -3059,6 +3072,8 @@ QMetaObject::Connection QObject::connect(const QObject *sender, const char *sign
         return QMetaObject::Connection(nullptr);
     }
 
+    // ### Future work: attempt get the metatypes from the meta object first
+    // because it's possible they're all registered.
     int *types = nullptr;
     if ((type == Qt::QueuedConnection)
             && !(types = queuedConnectionTypes(signalTypes.constData(), signalTypes.size()))) {
@@ -3210,6 +3225,7 @@ QMetaObject::Connection QObject::connect(const QObject *sender, const QMetaMetho
     \endlist
 
     \include includes/qobject.qdocinc disconnect-mismatch
+    \include includes/qobject.qdocinc disconnect-queued
 
     \nullptr may be used as a wildcard, meaning "any signal", "any receiving
     object", or "any slot in the receiving object", respectively.
@@ -3364,6 +3380,7 @@ bool QObject::disconnect(const QObject *sender, const char *signal,
     \endlist
 
     \include includes/qobject.qdocinc disconnect-mismatch
+    \include includes/qobject.qdocinc disconnect-queued
 
     QMetaMethod() may be used as wildcard in the meaning "any signal" or "any slot in receiving object".
     In the same way \nullptr can be used for \a receiver in the meaning "any receiving object".
@@ -3439,6 +3456,7 @@ bool QObject::disconnect(const QObject *sender, const QMetaMethod &signal,
     Disconnects \a signal from \a method of \a receiver.
 
     \include includes/qobject.qdocinc disconnect-mismatch
+    \include includes/qobject.qdocinc disconnect-queued
 
     A signal-slot connection is removed when either of the objects
     involved are destroyed.
@@ -3454,6 +3472,7 @@ bool QObject::disconnect(const QObject *sender, const QMetaMethod &signal,
     method.
 
     \include includes/qobject.qdocinc disconnect-mismatch
+    \include includes/qobject.qdocinc disconnect-queued
 
     A signal-slot connection is removed when either of the objects
     involved are destroyed.

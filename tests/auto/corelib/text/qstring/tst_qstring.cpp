@@ -5936,22 +5936,30 @@ void tst_QString::setRawData()
 
 void tst_QString::setUnicode()
 {
-    const QChar ptr[] = { QChar(0x1234), QChar(0x0000) };
+    const QChar ptr[] = { u'ሴ', QChar(0x0000) };
 
-    QString str;
-    QVERIFY(!str.isDetached());
-    str.setUnicode(ptr, 1);
-    // make sure that the data is copied
-    QVERIFY(str.constData() != ptr);
-    QVERIFY(str.isDetached());
-    QCOMPARE(str, QString(ptr, 1));
+    QTest::ThrowOnFailEnabler throwOnFail;
 
-    // make sure that the string is resized, even if the data is nullptr
-    str = u"test"_s;
-    QCOMPARE(str.size(), 4);
-    str.setUnicode(nullptr, 1);
-    QCOMPARE(str.size(), 1);
-    QCOMPARE(str, u"t");
+    auto doTest = [](const auto ptr, QString &str) mutable {
+        // make sure that the data is copied
+        QVERIFY(str.constData() != ptr);
+        QVERIFY(str.isDetached());
+        QCOMPARE(str, QString(ptr, 1));
+
+        // make sure that the string is resized, even if the data is nullptr
+        str = u"test"_s;
+        QCOMPARE(str.size(), 4);
+        str.setUnicode(nullptr, 1);
+        QCOMPARE(str.size(), 1);
+        QCOMPARE(str, u"t");
+    };
+
+    {
+        QString str;
+        QVERIFY(!str.isDetached());
+        str.setUnicode(ptr, 1);
+        doTest(ptr, str);
+    }
 }
 
 void tst_QString::fromStdString()
@@ -6861,7 +6869,8 @@ void tst_QString::number_double()
     QFETCH(double, value);
     QFETCH(char, format);
     QFETCH(int, precision);
-    if constexpr (std::numeric_limits<double>::has_denorm != std::denorm_present) {
+    QT_IGNORE_DEPRECATIONS(constexpr bool has_denorm = std::numeric_limits<double>::has_denorm != std::denorm_present;)
+    if constexpr (has_denorm) {
         if (::qstrcmp(QTest::currentDataTag(), "Very small number, very high precision, format 'f', precision 350") == 0) {
             QSKIP("Skipping 'denorm' as this type lacks denormals on this system");
         }

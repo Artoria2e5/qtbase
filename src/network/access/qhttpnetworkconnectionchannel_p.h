@@ -19,7 +19,6 @@
 #include <QtNetwork/qnetworkrequest.h>
 #include <QtNetwork/qnetworkreply.h>
 #include <QtNetwork/qabstractsocket.h>
-#include <QtNetwork/qlocalsocket.h>
 
 #include <private/qobject_p.h>
 #include <qauthenticator.h>
@@ -40,11 +39,16 @@
 #else
 #   include <QtNetwork/qtcpsocket.h>
 #endif
+#if QT_CONFIG(localserver)
+#   include <QtNetwork/qlocalsocket.h>
+#endif
+
 
 #include <QtCore/qpointer.h>
 #include <QtCore/qscopedpointer.h>
 
 #include <memory>
+#include <utility>
 
 QT_REQUIRE_CONFIG(http);
 
@@ -55,7 +59,7 @@ class QHttpNetworkReply;
 class QByteArray;
 
 #ifndef HttpMessagePair
-typedef QPair<QHttpNetworkRequest, QHttpNetworkReply*> HttpMessagePair;
+typedef std::pair<QHttpNetworkRequest, QHttpNetworkReply*> HttpMessagePair;
 #endif
 
 class QHttpNetworkConnectionChannel : public QObject {
@@ -137,7 +141,7 @@ public:
     void close();
     void abort();
 
-    bool sendRequest();
+    void sendRequest();
     void sendRequestDelayed();
 
     bool ensureConnection();
@@ -164,7 +168,9 @@ public:
     void _q_readyRead(); // pending data to read
     void _q_disconnected(); // disconnected from host
     void _q_connected_abstract_socket(QAbstractSocket *socket);
+#if QT_CONFIG(localserver)
     void _q_connected_local_socket(QLocalSocket *socket);
+#endif
     void _q_connected(); // start sending request
     void _q_error(QAbstractSocket::SocketError); // error from socket
 #ifndef QT_NO_NETWORKPROXY

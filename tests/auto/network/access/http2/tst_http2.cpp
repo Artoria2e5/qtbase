@@ -68,6 +68,7 @@ public:
     ~tst_Http2();
 public slots:
     void init();
+    void cleanup();
 private slots:
     // Tests:
     void defaultQnamHttp2Configuration();
@@ -110,6 +111,8 @@ private slots:
 
     void abortOnEncrypted();
 
+    void limitedConcurrentStreamsAllowed();
+
 protected slots:
     // Slots to listen to our in-process server:
     void serverStarted(quint16 port);
@@ -126,7 +129,8 @@ protected slots:
     void replyFinishedWithError();
 
 private:
-    [[nodiscard]] auto useTemporaryKeychain()
+    std::function<void()> m_temporaryKeyChainRollback;
+    [[nodiscard]] std::function<void()> useTemporaryKeychain()
     {
 #if QT_CONFIG(securetransport)
         // Normally on macOS we use plain text only for SecureTransport
@@ -136,16 +140,16 @@ private:
         // Our CI has this, but somebody testing locally - will have a problem.
         auto value = qEnvironmentVariable("QT_SSL_USE_TEMPORARY_KEYCHAIN");
         qputenv("QT_SSL_USE_TEMPORARY_KEYCHAIN", "1");
-        auto envRollback = qScopeGuard([value](){
+        auto envRollback = [value](){
             if (value.isEmpty())
                 qunsetenv("QT_SSL_USE_TEMPORARY_KEYCHAIN");
             else
                 qputenv("QT_SSL_USE_TEMPORARY_KEYCHAIN", value.toUtf8());
-        });
+        };
         return envRollback;
 #else
         // avoid maybe-unused warnings from callers
-        return qScopeGuard([]{});
+        return {};
 #endif // QT_CONFIG(securetransport)
     }
 
@@ -241,6 +245,15 @@ tst_Http2::~tst_Http2()
 void tst_Http2::init()
 {
     manager.reset(new QNetworkAccessManager);
+
+    m_temporaryKeyChainRollback = useTemporaryKeychain();
+}
+
+void tst_Http2::cleanup()
+{
+    if (m_temporaryKeyChainRollback)
+        m_temporaryKeyChainRollback();
+    m_temporaryKeyChainRollback = {};
 }
 
 void tst_Http2::defaultQnamHttp2Configuration()
@@ -265,15 +278,14 @@ void tst_Http2::singleRequest_data()
     }
 
 #if QT_CONFIG(ssl)
-    QTest::addRow("h2-direct") << QNetworkRequest::Http2DirectAttribute << H2Type::h2Direct;
+    if (QSslSocket::supportsSsl())
+        QTest::addRow("h2-direct") << QNetworkRequest::Http2DirectAttribute << H2Type::h2Direct;
 #endif
 }
 
 void tst_Http2::singleRequest()
 {
     clearHTTP2State();
-
-    auto rollback = useTemporaryKeychain();
 
     serverPort = 0;
     nRequests = 1;
@@ -682,9 +694,11 @@ void tst_Http2::connectToHost_data()
     QTest::addColumn<H2Type>("connectionType");
 
 #if QT_CONFIG(ssl)
-    QTest::addRow("encrypted-h2-direct") << QNetworkRequest::Http2DirectAttribute << H2Type::h2Direct;
-    if (!clearTextHTTP2)
-        QTest::addRow("encrypted-h2-ALPN") << QNetworkRequest::Http2AllowedAttribute << H2Type::h2Alpn;
+    if (QSslSocket::supportsSsl()) {
+        QTest::addRow("encrypted-h2-direct") << QNetworkRequest::Http2DirectAttribute << H2Type::h2Direct;
+        if (!clearTextHTTP2)
+            QTest::addRow("encrypted-h2-ALPN") << QNetworkRequest::Http2AllowedAttribute << H2Type::h2Alpn;
+    }
 #endif // QT_CONFIG(ssl)
     // This works for all configurations, tests 'preconnect-http' scheme:
     // h2 with protocol upgrade is not working for now (the logic is a bit
@@ -717,13 +731,15 @@ void tst_Http2::connectToHost()
     ServerPtr targetServer(newServer(defaultServerSettings, connectionType));
 
 #if QT_CONFIG(ssl)
-    Q_ASSERT(!clearTextHTTP2 || connectionType != H2Type::h2Alpn);
-
-    auto rollback = useTemporaryKeychain();
-#else
-    Q_ASSERT(connectionType == H2Type::h2c || connectionType == H2Type::h2cDirect);
-    Q_ASSERT(targetServer->isClearText());
-#endif // QT_CONFIG(ssl)
+    if (QSslSocket::supportsSsl())
+    {
+        Q_ASSERT(!clearTextHTTP2 || connectionType != H2Type::h2Alpn);
+    } else
+#endif
+    {
+        Q_ASSERT(connectionType == H2Type::h2c || connectionType == H2Type::h2cDirect);
+        Q_ASSERT(targetServer->isClearText());
+    }
 
     QMetaObject::invokeMethod(targetServer.data(), "startServer", Qt::QueuedConnection);
     runEventLoop();
@@ -805,8 +821,6 @@ void tst_Http2::maxFrameSize()
     // Here we test we send 'MAX_FRAME_SIZE' setting in our
     // 'SETTINGS'. If done properly, our server will not chunk
     // the payload into several DATA frames.
-
-    auto rollback = useTemporaryKeychain();
 
     auto connectionType = H2Type::h2Alpn;
     auto attribute = QNetworkRequest::Http2AllowedAttribute;
@@ -952,16 +966,16 @@ void tst_Http2::moreActivitySignals_data()
                 << QNetworkRequest::Http2AllowedAttribute << H2Type::h2Alpn;
 
 #if QT_CONFIG(ssl)
-    QTest::addRow("h2-direct")
-            << QNetworkRequest::Http2DirectAttribute << H2Type::h2Direct;
+    if (QSslSocket::supportsSsl()) {
+        QTest::addRow("h2-direct")
+                << QNetworkRequest::Http2DirectAttribute << H2Type::h2Direct;
+    }
 #endif
 }
 
 void tst_Http2::moreActivitySignals()
 {
     clearHTTP2State();
-
-    auto rollback = useTemporaryKeychain();
 
     serverPort = 0;
     QFETCH(H2Type, connectionType);
@@ -1053,9 +1067,11 @@ void tst_Http2::contentEncoding_data()
                     << QNetworkRequest::Http2AllowedAttribute << H2Type::h2Alpn;
 
 #if QT_CONFIG(ssl)
-        QTest::addRow("%s-h2-direct", name)
-                << data.contentEncoding << data.body << data.expected
-                << QNetworkRequest::Http2DirectAttribute << H2Type::h2Direct;
+        if (QSslSocket::supportsSsl()) {
+            QTest::addRow("%s-h2-direct", name)
+                    << data.contentEncoding << data.body << data.expected
+                    << QNetworkRequest::Http2DirectAttribute << H2Type::h2Direct;
+        }
 #endif
     }
 }
@@ -1063,8 +1079,6 @@ void tst_Http2::contentEncoding_data()
 void tst_Http2::contentEncoding()
 {
     clearHTTP2State();
-
-    auto rollback = useTemporaryKeychain();
 
     QFETCH(H2Type, connectionType);
 
@@ -1528,8 +1542,8 @@ void tst_Http2::abortOnEncrypted()
 #if !QT_CONFIG(ssl)
     QSKIP("TLS support is needed for this test");
 #else
-
-    auto rollback = useTemporaryKeychain();
+    if (!QSslSocket::supportsSsl())
+        QSKIP("TLS support is needed for this test");
 
     clearHTTP2State();
     serverPort = 0;
@@ -1566,6 +1580,61 @@ void tst_Http2::abortOnEncrypted()
             500);
     QVERIFY(!res);
 #endif // QT_CONFIG(ssl)
+}
+
+/*
+    While the standard heavily recommends allowing at _least_ 100 streams, let's
+    test how we cope with a very small number of streams allowed.
+
+    Basically we are just testing how we would handle the situation where we are
+    up against the limit of active streams, which should be well-behaved to
+    avoid having the server to close the connection.
+*/
+void tst_Http2::limitedConcurrentStreamsAllowed()
+{
+    clearHTTP2State();
+    serverPort = 0;
+
+    H2Type connectionType = H2Type::h2Direct;
+    RawSettings oneConcurrentStream{ { Http2::Settings::MAX_CONCURRENT_STREAMS_ID, 1 } };
+    ServerPtr targetServer(newServer(oneConcurrentStream, connectionType));
+
+    QMetaObject::invokeMethod(targetServer.data(), "startServer", Qt::QueuedConnection);
+    runEventLoop();
+
+    QVERIFY(serverPort != 0);
+
+    constexpr qint32 TotalRequests = 3;
+    nRequests = TotalRequests;
+
+    const auto url = requestUrl(connectionType);
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::Http2DirectAttribute, true);
+
+    qint32 finishedCount = 0;
+    qint32 errorCount = 0;
+    const auto onFinished = [&](QNetworkReply *reply) {
+        ++finishedCount;
+        if (reply->error() == QNetworkReply::NoError)
+            replyFinished();
+        else
+            ++errorCount;
+    };
+
+    std::vector<QNetworkReply *> replies;
+
+    for (qint32 i = 0; i < TotalRequests; ++i) {
+        auto *reply = replies.emplace_back(manager->get(request));
+        reply->ignoreSslErrors();
+        connect(reply, &QNetworkReply::finished, reply, [&,reply](){ onFinished(reply); });
+    }
+
+    runEventLoop();
+    STOP_ON_FAILURE
+
+    QCOMPARE(nRequests, 0);
+    QCOMPARE(errorCount, 0);
+    QCOMPARE(finishedCount, TotalRequests);
 }
 
 void tst_Http2::serverStarted(quint16 port)

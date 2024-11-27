@@ -160,7 +160,8 @@ function(qt_internal_add_plugin target)
 
     qt_set_common_target_properties("${target}")
     qt_internal_add_target_aliases("${target}")
-    qt_skip_warnings_are_errors_when_repo_unclean("${target}")
+
+    qt_internal_default_warnings_are_errors("${target}")
 
     set_target_properties("${target}" PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${output_directory}"
@@ -217,6 +218,7 @@ function(qt_internal_add_plugin target)
             # This QT_PLUGINS assignment is only used by QtPostProcessHelpers to decide if a
             # QtModulePlugins.cmake file should be generated.
             set_property(TARGET "${qt_module_target}" APPEND PROPERTY QT_PLUGINS "${target}")
+            __qt_internal_add_interface_plugin_target(${qt_module_target} ${target} BUILD_ONLY)
         else()
             # The _qt_plugins property is considered when collecting the plugins in
             # deployment process. The usecase is following:
@@ -224,6 +226,7 @@ function(qt_internal_add_plugin target)
             # The plugin is built in some application build tree and its PLUGIN_TYPE is associated
             # with QtModuleX.
             set_property(TARGET "${qt_module_target}" APPEND PROPERTY _qt_plugins "${target}")
+            __qt_internal_add_interface_plugin_target(${qt_module_target} ${target})
         endif()
 
         set(plugin_target_versioned "${QT_CMAKE_EXPORT_NAMESPACE}::${target}")
@@ -338,7 +341,8 @@ function(qt_internal_add_plugin target)
 
     if(target_type STREQUAL STATIC_LIBRARY)
         if(qt_module_target)
-            qt_internal_link_internal_platform_for_object_library("${plugin_init_target}")
+            qt_internal_link_internal_platform_for_object_library("${plugin_init_target}"
+                PARENT_TARGET "${target}")
         endif()
     endif()
 

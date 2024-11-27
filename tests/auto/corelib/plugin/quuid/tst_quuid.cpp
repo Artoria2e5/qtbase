@@ -12,6 +12,10 @@
 #include <qcoreapplication.h>
 #include <quuid.h>
 
+#ifdef Q_OS_ANDROID
+#include <QStandardPaths>
+#endif
+
 class tst_QUuid : public QObject
 {
     Q_OBJECT
@@ -82,7 +86,7 @@ void tst_QUuid::initTestCase()
 #if QT_CONFIG(process)
     // chdir to the directory containing our testdata, then refer to it with relative paths
 #ifdef Q_OS_ANDROID
-    QString testdata_dir = QCoreApplication::applicationDirPath();
+    QString testdata_dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
 #else // !Q_OS_ANDROID
     QString testdata_dir = QFileInfo(QFINDTESTDATA("testProcessUniqueness")).absolutePath();
 #endif
@@ -471,6 +475,7 @@ void tst_QUuid::ordering_data()
 #define AFTER_NCS(x) ROW(minNCS, x, less)
     AFTER_NCS(ncs000_0000_0010);
     AFTER_NCS(ncs000_0000_0100);
+    ROW(ncs000_0000_0010, ncs000_0000_0100, less);
     AFTER_NCS(ncs000_0000_1000);
     AFTER_NCS(ncs000_0001_0000);
     AFTER_NCS(ncs000_0010_0000);
@@ -498,6 +503,13 @@ void tst_QUuid::ordering_data()
     AFTER_R(ones);
 #undef AFTER_R
 #undef ROW
+
+    // due to the way we store data1,2,3 in memory, the ordering will flip
+    QTest::newRow("qt7-integer-portions")
+            << QUuid{0x01000002, 0x0000, 0x0000, 0, 0, 0, 0, 0, 0, 0, 0}
+            << QUuid{0x02000001, 0x0000, 0x0000, 0, 0, 0, 0, 0, 0, 0, 0}
+            << (QSysInfo::ByteOrder == QSysInfo::BigEndian || QT_VERSION_MAJOR < 7 ?
+                    Qt::strong_ordering::less : Qt::strong_ordering::greater);
 }
 
 void tst_QUuid::ordering()
@@ -506,6 +518,7 @@ void tst_QUuid::ordering()
     QFETCH(const QUuid, rhs);
     QFETCH(const Qt::strong_ordering, expected);
 
+    QCOMPARE(qCompareThreeWay(lhs, rhs), expected);
     QT_TEST_ALL_COMPARISON_OPS(lhs, rhs, expected);
 }
 

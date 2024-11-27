@@ -90,7 +90,6 @@
 #if __has_include(<paths.h>)
 # include <paths.h>
 #endif
-#include <signal.h>
 #include <time.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
@@ -98,15 +97,6 @@
 #include <unistd.h>
 # if !defined(Q_OS_INTEGRITY)
 #  include <sys/resource.h>
-# endif
-# ifndef _PATH_DEFPATH
-#  define _PATH_DEFPATH     "/usr/bin:/bin"
-# endif
-# ifndef SIGSTKSZ
-#  define SIGSTKSZ          0       /* we have code to set the minimum */
-# endif
-# ifndef SA_RESETHAND
-#  define SA_RESETHAND      0
 # endif
 #endif
 
@@ -119,6 +109,10 @@
 
 #if defined(Q_OS_WASM)
 #include <emscripten.h>
+#endif
+
+#ifdef Q_OS_ANDROID
+#include <QtCore/QStandardPaths>
 #endif
 
 #include <vector>
@@ -311,9 +305,6 @@ void Internal::maybeThrowOnSkip()
     with \c{true}, you need to call it \e{N} times with \c{false} to get back
     to where you started.
 
-    The default is \c{false}, unless the \l{Qt Test Environment Variables}
-    {QTEST_THROW_ON_FAIL environment variable} is set.
-
     This call has no effect when the \l{QTEST_THROW_ON_FAIL} C++ macro is
     defined.
 
@@ -337,9 +328,6 @@ void setThrowOnFail(bool enable) noexcept
     The feature is reference-counted: If you call this function \e{N} times
     with \c{true}, you need to call it \e{N} times with \c{false} to get back
     to where you started.
-
-    The default is \c{false}, unless the \l{Qt Test Environment Variables}
-    {QTEST_THROW_ON_SKIP environment variable} is set.
 
     This call has no effect when the \l{QTEST_THROW_ON_SKIP} C++ macro is
     defined.
@@ -622,11 +610,6 @@ Q_TESTLIB_EXPORT void qtest_qParseArgs(int argc, const char *const argv[], bool 
     QTest::testFunctions.clear();
     QTest::testTags.clear();
 
-    if (qEnvironmentVariableIsSet("QTEST_THROW_ON_FAIL"))
-        QTest::setThrowOnFail(true);
-    if (qEnvironmentVariableIsSet("QTEST_THROW_ON_SKIP"))
-        QTest::setThrowOnSkip(true);
-
 #if defined(Q_OS_DARWIN) && defined(HAVE_XCTEST)
     if (QXcodeTestLogger::canLogTestProgress())
         logFormat = QTestLog::XCTest;
@@ -683,10 +666,6 @@ Q_TESTLIB_EXPORT void qtest_qParseArgs(int argc, const char *const argv[], bool 
          "                       repeated forever. This is intended as a developer tool, and\n"
          "                       is only supported with the plain text logger.\n"
          " -skipblacklisted    : Skip blacklisted tests. Useful for measuring test coverage.\n"
-         " -[no]throwonfail    : Enables/disables throwing on QCOMPARE()/QVERIFY()/etc.\n"
-         "                       Default: off,  unless QTEST_THROW_ON_FAIL is set."
-         " -[no]throwonskip    : Enables/disables throwing on QSKIP().\n"
-         "                       Default: off,  unless QTEST_THROW_ON_SKIP is set."
          "\n"
          " Benchmarking options:\n"
 #if QT_CONFIG(valgrind)
@@ -847,14 +826,6 @@ Q_TESTLIB_EXPORT void qtest_qParseArgs(int argc, const char *const argv[], bool 
             QTest::Internal::noCrashHandler = true;
         } else if (strcmp(argv[i], "-skipblacklisted") == 0) {
             QTest::skipBlacklisted = true;
-        } else if (strcmp(argv[i], "-throwonfail") == 0) {
-            QTest::setThrowOnFail(true);
-        } else if (strcmp(argv[i], "-nothrowonfail") == 0) {
-            QTest::setThrowOnFail(false);
-        } else if (strcmp(argv[i], "-throwonskip") == 0) {
-            QTest::setThrowOnSkip(true);
-        } else if (strcmp(argv[i], "-nothrowonskip") == 0) {
-            QTest::setThrowOnSkip(false);
 #if QT_CONFIG(valgrind)
         } else if (strcmp(argv[i], "-callgrind") == 0) {
             if (!QBenchmarkValgrindUtils::haveValgrind()) {
@@ -1275,6 +1246,17 @@ public:
 
 #endif  // QT_CONFIG(thread)
 
+template <typename Functor>
+void runWithWatchdog(std::optional<WatchDog> &watchDog, Functor &&f)
+{
+    if (watchDog)
+        watchDog->beginTest();
+
+    f();
+
+    if (watchDog)
+        watchDog->testFinished();
+}
 
 static void printUnknownDataTagError(QLatin1StringView name, QLatin1StringView tag,
                                      const QTestTable &lTable, const QTestTable &gTable)
@@ -1346,7 +1328,9 @@ bool TestMethods::invokeTest(int index, QLatin1StringView tag, std::optional<Wat
 
         if (curGlobalDataIndex == 0) {
             std::snprintf(member, 512, "%s_data()", name.constData());
-            invokeTestMethodIfExists(member);
+            runWithWatchdog(watchDog, [&member] {
+                invokeTestMethodIfExists(member);
+            });
             if (QTestResult::skipCurrentTest())
                 break;
         }
@@ -1379,12 +1363,14 @@ bool TestMethods::invokeTest(int index, QLatin1StringView tag, std::optional<Wat
                         curDataIndex >= dataCount ? nullptr : table.testData(curDataIndex));
 
                     QTestPrivate::qtestMouseButtons = Qt::NoButton;
-                    if (watchDog)
-                        watchDog->beginTest();
-                    QTest::lastMouseTimestamp += 500;   // Maintain at least 500ms mouse event timestamps between each test function call
-                    invokeTestOnData(index);
-                    if (watchDog)
-                        watchDog->testFinished();
+
+                    // Maintain at least 500ms mouse event timestamps between each test function
+                    // call
+                    QTest::lastMouseTimestamp += 500;
+
+                    runWithWatchdog(watchDog, [this, index] {
+                        invokeTestOnData(index);
+                    });
                 }
 
                 if (!tag.isEmpty() && !globalDataCount)
@@ -1691,8 +1677,6 @@ void TestMethods::invokeTests(QObject *testObject) const
 {
     const QMetaObject *metaObject = testObject->metaObject();
     QTEST_ASSERT(metaObject);
-    QTestResult::setCurrentTestFunction("initTestCase");
-    invokeTestMethodIfValid(m_initTestCaseDataMethod, testObject);
 
     std::optional<WatchDog> watchDog = std::nullopt;
     if (!CrashHandler::alreadyDebugging()
@@ -1703,10 +1687,18 @@ void TestMethods::invokeTests(QObject *testObject) const
         watchDog.emplace();
     }
 
+    QTestResult::setCurrentTestFunction("initTestCase");
+    runWithWatchdog(watchDog, [this, testObject] {
+        invokeTestMethodIfValid(m_initTestCaseDataMethod, testObject);
+    });
+
     QSignalDumper::startDump();
 
     if (!QTestResult::skipCurrentTest() && !QTestResult::currentTestFailed()) {
-        invokeTestMethodIfValid(m_initTestCaseMethod, testObject);
+
+        runWithWatchdog(watchDog, [this, testObject] {
+            invokeTestMethodIfValid(m_initTestCaseMethod, testObject);
+        });
 
         // finishedCurrentTestDataCleanup() resets QTestResult::currentTestFailed(), so use a local copy.
         const bool previousFailed = QTestResult::currentTestFailed();
@@ -1730,7 +1722,10 @@ void TestMethods::invokeTests(QObject *testObject) const
         QTestResult::setSkipCurrentTest(false);
         QTestResult::setBlacklistCurrentTest(false);
         QTestResult::setCurrentTestFunction("cleanupTestCase");
-        invokeTestMethodIfValid(m_cleanupTestCaseMethod, testObject);
+        runWithWatchdog(watchDog, [this, testObject] {
+            invokeTestMethodIfValid(m_cleanupTestCaseMethod, testObject);
+        });
+
         QTestResult::finishedCurrentTestData();
         // Restore skip state as it affects decision on whether we passed:
         QTestResult::setSkipCurrentTest(wasSkipped || QTestResult::skipCurrentTest());
@@ -1775,6 +1770,14 @@ static void initEnvironment()
 {
     qputenv("QT_QTESTLIB_RUNNING", "1");
 }
+
+#ifdef Q_OS_ANDROID
+static QFile androidExitCodeFile()
+{
+    const QString testHome = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+    return QFile(testHome + "/qtest_last_exit_code"_L1);
+}
+#endif
 
 /*!
     Executes tests declared in \a testObject. In addition, the private slots
@@ -1876,6 +1879,10 @@ void QTest::qInit(QObject *testObject, int argc, char **argv)
     if (QBenchmarkGlobalData::current->mode() != QBenchmarkGlobalData::CallgrindParentProcess)
 #endif
         QTestLog::startLogging();
+
+#ifdef Q_OS_ANDROID
+    androidExitCodeFile().remove();
+#endif
 }
 
 /*! \internal
@@ -1970,7 +1977,19 @@ int QTest::qRun()
 #endif
     // make sure our exit code is never going above 127
     // since that could wrap and indicate 0 test fails
-    return qMin(QTestLog::failCount(), 127);
+    const int exitCode = qMin(QTestLog::failCount(), 127);
+
+#ifdef Q_OS_ANDROID
+    QFile exitCodeFile = androidExitCodeFile();
+    if (exitCodeFile.open(QIODevice::WriteOnly)) {
+        exitCodeFile.write(qPrintable(QString::number(exitCode)));
+    } else {
+        qWarning("Failed to open %s for writing test exit code: %s",
+                 qPrintable(exitCodeFile.fileName()), qPrintable(exitCodeFile.errorString()));
+    }
+#endif
+
+    return exitCode;
 }
 
 /*! \internal
@@ -2637,9 +2656,6 @@ QTestData &QTest::addRow(const char *format, ...)
     Example:
     \snippet code/src_qtestlib_qtestcase.cpp 21
 
-    To add custom types to the testdata, the type must be registered with
-    QMetaType via \l Q_DECLARE_METATYPE().
-
     \note This function can only be used called as part of a test's data
     function that is invoked by the test framework.
 
@@ -2818,6 +2834,56 @@ bool QTest::compare_helper(bool success, const char *failureMsg,
                                      actual, expected,
                                      QTest::ComparisonOperation::CustomCompare,
                                      file, line, failureMsg);
+}
+
+
+/*! \internal
+    \since 6.9
+    This function reports the result of a three-way comparison, when needed.
+
+    Aside from logging every check if in verbose mode and reporting an
+    unexpected pass when failure was expected, if \a success is \c true
+    this produces no output. Otherwise, a failure is reported. The output
+    on failure reports the expressions compared, their values, the actual
+    result of the comparison and the expected result of comparison, along
+    with the supplied failure message \a failureMsg and the \a file and
+    \a line number at which the error arose.
+
+    The expressions compared are supplied as \a lhsExpression and
+    \a rhsExpression.
+    These are combined, with \c{"<=>"}, to obtain the actual comparison
+    expression. Their actual values are pointed to by \a lhsPtr and
+    \a rhsPtr, which are formatted by \a lhsFormatter and \a rhsFormatter
+    as, respectively, \c lhsFormatter(lhsPtr) and \c rhsFormatter(rhsPtr).
+    The actual comparison expression is contrasted,
+    in the output, with the expected comparison expression
+    \a expectedExpression. Their respective values are supplied by
+    \a actualOrderPtr and \a expectedOrderPtr pointers, which are
+    formatted by \a actualOrderFormatter and \a expectedOrderFormatter.
+
+    If \a failureMsg is \nullptr a default is used. If a formatter
+    function returns \a nullptr, the text \c{"<null>"} is used.
+*/
+bool QTest::compare_3way_helper(bool success, const char *failureMsg,
+                                const void *lhsPtr, const void *rhsPtr,
+                                const char *(*lhsFormatter)(const void*),
+                                const char *(*rhsFormatter)(const void*),
+                                const char *lhsExpression, const char *rhsExpression,
+                                const char *(*actualOrderFormatter)(const void *),
+                                const char *(*expectedOrderFormatter)(const void *),
+                                const void *actualOrderPtr, const void *expectedOrderPtr,
+                                const char *expectedExpression,
+                                const char *file, int line)
+{
+    return QTestResult::report3WayResult(success, failureMsg,
+                                         lhsPtr, rhsPtr,
+                                         lhsFormatter, rhsFormatter,
+                                         lhsExpression, rhsExpression,
+                                         actualOrderFormatter,
+                                         expectedOrderFormatter,
+                                         actualOrderPtr, expectedOrderPtr,
+                                         expectedExpression,
+                                         file, line);
 }
 
 /*! \internal

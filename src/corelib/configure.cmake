@@ -143,6 +143,22 @@ int pipes[2];
 }
 ")
 
+# Check if __cxa_thread_atexit{,_impl} are present in the C library (hence why
+# PROJECT_PATH instead of CODE for C++). Either one suffices to disable
+# FEATURE_broken_threadlocal_dtors. See details in qthread_unix.cpp.
+qt_config_compile_test(cxa_thread_atexit
+    # Seen on Darwin and FreeBSD
+    LABEL "__cxa_thread_atexit in C library"
+    PROJECT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../config.tests/cxa_thread_atexit"
+    CMAKE_FLAGS -DTEST_FUNC=__cxa_thread_atexit
+)
+qt_config_compile_test(cxa_thread_atexit_impl
+    # Seen on Bionic, FreeBSD, glibc
+    LABEL "__cxa_thread_atexit_impl in C library"
+    PROJECT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../config.tests/cxa_thread_atexit"
+    CMAKE_FLAGS -DTEST_FUNC=__cxa_thread_atexit_impl
+)
+
 # cxx17_filesystem
 qt_config_compile_test(cxx17_filesystem
     LABEL "C++17 <filesystem>"
@@ -416,6 +432,51 @@ poll(&pfd, 1, 0);
 }
 ")
 
+# pthread_clockjoin
+qt_config_compile_test(pthread_clockjoin
+    LABEL "pthread_clockjoin()"
+    LIBRARIES Threads::Threads
+    CODE
+"#include <pthread.h>
+int main()
+{
+    void *ret;
+    const struct timespec ts = {};
+    return pthread_clockjoin_np(pthread_self(), &ret, CLOCK_MONOTONIC, &ts);
+}
+")
+
+# pthread_condattr_setclock
+qt_config_compile_test(pthread_condattr_setclock
+    LABEL "pthread_condattr_setclock()"
+    LIBRARIES Threads::Threads
+    CODE
+"#include <pthread.h>
+#include <time.h>
+int main()
+{
+    pthread_condattr_t condattr;
+    return pthread_condattr_setclock(&condattr, CLOCK_REALTIME);
+}
+")
+
+# pthread_timedjoin
+qt_config_compile_test(pthread_timedjoin
+    LABEL "pthread_timedjoin()"
+    LIBRARIES Threads::Threads
+    CODE
+"#include <pthread.h>
+#if __has_include(<pthread_np.h>)
+#  include <pthread_np.h>
+#endif
+int main()
+{
+    void *ret;
+    const struct timespec ts = {};
+    return pthread_timedjoin_np(pthread_self(), &ret, &ts);
+}
+")
+
 # renameat2
 qt_config_compile_test(renameat2
     LABEL "renameat2()"
@@ -470,6 +531,7 @@ const auto backtrace = std::stacktrace::current();
 # <future>
 qt_config_compile_test(cxx_std_async_noncopyable
     LABEL "std::async() NonCopyable"
+    LIBRARIES Threads::Threads
     CODE
 "// Calling std::async with lambda which takes non-copyable argument causes compilation error on
 // some platforms (VxWorks 24.03 and older with C++17-compatibility for example)
@@ -494,6 +556,28 @@ int main(int argc, char** argv) {
         NonCopyable(argc - 1)).get();
 }
 ")
+
+# <chrono>
+qt_config_compile_test(chrono_tzdb
+    LABEL "Support for timezones in C++20 <chrono>"
+    CODE
+"#include <chrono>
+#if __cpp_lib_chrono < 201907L
+#error
+#endif
+
+int main(void)
+{
+    /* BEGIN TEST: */
+    const std::chrono::tzdb &tzdb = std::chrono::get_tzdb();
+    auto when = std::chrono::system_clock::now();
+    const std::chrono::time_zone *currentZone = tzdb.current_zone();
+    auto zoneInfo = currentZone->get_info(when);
+    /* END TEST: */
+    return 0;
+}
+"
+)
 
 #### Features
 
@@ -528,6 +612,11 @@ qt_feature("cxx11_future" PUBLIC
 qt_feature("cxx17_filesystem" PUBLIC
     LABEL "C++17 <filesystem>"
     CONDITION TEST_cxx17_filesystem
+)
+qt_feature("broken-threadlocal-dtors" PRIVATE
+    LABEL "Broken execution of thread_local destructors at exit() time"
+    # Windows is broken in different ways from Unix
+    CONDITION WIN32 OR NOT (TEST_cxa_thread_atexit OR TEST_cxa_thread_atexit_impl)
 )
 qt_feature("dladdr" PRIVATE
     LABEL "dladdr"
@@ -649,6 +738,21 @@ qt_feature("posix_sem" PRIVATE
 qt_feature("posix_shm" PRIVATE
     LABEL "POSIX shared memory"
     CONDITION TEST_posix_shm AND UNIX
+)
+qt_feature("pthread_clockjoin" PRIVATE
+    LABEL "pthread_clockjoin() function"
+    AUTODETECT UNIX
+    CONDITION UNIX AND QT_FEATURE_thread AND TEST_pthread_clockjoin
+)
+qt_feature("pthread_condattr_setclock" PRIVATE
+    LABEL "pthread_condattr_setclock() function"
+    AUTODETECT UNIX
+    CONDITION UNIX AND QT_FEATURE_thread AND TEST_pthread_condattr_setclock
+)
+qt_feature("pthread_timedjoin" PRIVATE
+    LABEL "pthread_timedjoin() function"
+    AUTODETECT UNIX
+    CONDITION UNIX AND QT_FEATURE_thread AND TEST_pthread_timedjoin
 )
 qt_feature("qqnx_pps" PRIVATE
     LABEL "PPS"
@@ -908,6 +1012,15 @@ qt_feature("timezone_locale" PRIVATE
     CONDITION
         QT_FEATURE_timezone AND NOT APPLE AND NOT ANDROID
 )
+qt_feature("timezone_tzdb" PUBLIC
+    SECTION "Utilities"
+    LABEL "std::chrono::tzdb QTZ backend"
+    PURPOSE "Provides support for a timezone backend using std::chrono."
+    CONDITION TEST_chrono_tzdb
+    # See QTBUG-127598 for gcc's libstdc++'s deficiencies.
+    # Update src/corelib/doc/src/cpp20-overview.qdoc before enabling this:
+    AUTODETECT OFF
+)
 qt_feature("datetimeparser" PRIVATE
     SECTION "Utilities"
     LABEL "QDateTimeParser"
@@ -979,6 +1092,7 @@ qt_configure_add_summary_entry(ARGS "system-doubleconversion")
 qt_configure_add_summary_entry(ARGS "forkfd_pidfd" CONDITION LINUX)
 qt_configure_add_summary_entry(ARGS "glib")
 qt_configure_add_summary_entry(ARGS "icu")
+qt_configure_add_summary_entry(ARGS "timezone_tzdb")
 qt_configure_add_summary_entry(ARGS "system-libb2")
 qt_configure_add_summary_entry(ARGS "mimetype-database")
 qt_configure_add_summary_entry(ARGS "permissions")

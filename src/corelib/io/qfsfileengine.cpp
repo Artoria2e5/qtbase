@@ -793,13 +793,6 @@ qint64 QFSFileEnginePrivate::writeFdFh(const char *data, qint64 len)
     \internal
 */
 QAbstractFileEngine::IteratorUniquePtr
-QFSFileEngine::beginEntryList(const QString &path, QDir::Filters filters,
-                              const QStringList &filterNames)
-{
-    return std::make_unique<QFSFileEngineIterator>(path, filters, filterNames);
-}
-
-QAbstractFileEngine::IteratorUniquePtr
 QFSFileEngine::beginEntryList(const QString &path, QDirListing::IteratorFlags filters,
                               const QStringList &filterNames)
 {
@@ -869,10 +862,6 @@ bool QFSFileEngine::supportsExtension(Extension extension) const
         return true;
     return false;
 }
-
-/*! \fn bool QFSFileEngine::caseSensitive() const
-  Returns \c false for Windows, true for Unix.
-*/
 
 /*! \fn QString QFSFileEngine::currentPath(const QString &fileName)
   For Unix, returns the current working directory for the file
@@ -983,9 +972,10 @@ bool QFSFileEngine::remove()
     Q_D(QFSFileEngine);
     QSystemError error;
     bool ret = QFileSystemEngine::removeFile(d->fileEntry, error);
-    d->metaData.clear();
     if (!ret)
         setError(QFile::RemoveError, error.toString());
+    else
+        d->metaData.clear();
     return ret;
 }
 
@@ -1045,6 +1035,16 @@ bool QFSFileEngine::rmdir(const QString &name, bool recurseParentDirectories) co
 bool QFSFileEngine::setCurrentPath(const QString &path)
 {
     return QFileSystemEngine::setCurrentPath(QFileSystemEntry(path));
+}
+
+/*!
+    Returns whether the file system considers the file name to be
+    case sensitive.
+*/
+bool QFSFileEngine::caseSensitive() const
+{
+    Q_D(const QFSFileEngine);
+    return QFileSystemEngine::isCaseSensitive(d->fileEntry, d->metaData);
 }
 
 /*! \fn bool QFSFileEngine::setPermissions(uint perms)

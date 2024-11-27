@@ -11,15 +11,9 @@ QT_USE_NAMESPACE
 
 #include "qmetatype.h"
 
-// keep in sync with version in header
 int QMetaType::id() const
 {
-    if (d_ptr) {
-        if (int id = d_ptr->typeId.loadRelaxed())
-            return id;
-        return idHelper();
-    }
-    return 0;
+    return registerHelper();
 }
 
 #endif // QT_CORE_REMOVED_SINCE(6, 1)
@@ -1251,6 +1245,47 @@ QUuid QUuid::createUuidV5(const QUuid &ns, const QByteArray &baseData) noexcept
 #endif // QT_CORE_REMOVED_SINCE(6, 8)
 
 #if QT_CORE_REMOVED_SINCE(6, 9)
+
+#include "qchar.h" // inlined API
+
+#include "qmetatype.h"
+
+bool QMetaType::isRegistered() const
+{
+    return isRegistered(QT6_CALL_NEW_OVERLOAD);
+}
+
+bool QMetaType::isValid() const
+{
+    return isValid(QT6_CALL_NEW_OVERLOAD);
+}
+
+
+#include "qmetaobject.h"
+
+const char *QMetaEnum::valueToKey(int value) const
+{
+    return valueToKey(quint64(uint(value)));
+}
+
+QByteArray QMetaEnum::valueToKeys(int value) const
+{
+    return valueToKeys(quint64(uint(value)));
+}
+
+
+#include "qstring.h"
+
+QString QtPrivate::argToQString(QStringView pattern, size_t n, const ArgBase **args)
+{
+    return argToQString(QAnyStringView{pattern}, n, args);
+}
+
+QString QtPrivate::argToQString(QLatin1StringView pattern, size_t n, const ArgBase **args)
+{
+    return argToQString(QAnyStringView{pattern}, n, args);
+}
+
 
 #include "quuid.h"
 

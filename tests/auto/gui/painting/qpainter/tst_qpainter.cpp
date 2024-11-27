@@ -280,6 +280,7 @@ private slots:
 
     void fillPolygon();
 
+    void textOnArgb32();
     void drawImageAtPointF();
     void scaledDashes();
 #if QT_CONFIG(raster_fp)
@@ -2846,7 +2847,7 @@ void tst_QPainter::monoImages()
 
 #if defined(Q_OS_DARWIN) || defined(Q_OS_FREEBSD) || defined(Q_OS_ANDROID)
 #  define TEST_FPE_EXCEPTIONS
-#elif defined(Q_OS_LINUX) && defined(__GLIBC__)
+#elif defined(__GLIBC__)
 #  define TEST_FPE_EXCEPTIONS
 #elif defined(Q_OS_WIN) && defined(Q_CC_GNU)
 #  define TEST_FPE_EXCEPTIONS
@@ -5456,6 +5457,31 @@ void tst_QPainter::fillPolygon()
                     }
                 }
             }
+        }
+    }
+}
+
+void tst_QPainter::textOnArgb32()
+{
+    QImage backing(100, 20, QImage::Format_RGB32);
+    backing.fill(Qt::white);
+    QImage img(100, 20, QImage::Format_ARGB32);
+    img.fill(Qt::transparent); // Filled with transparent black
+
+    QPainter imagePainter(&img);
+    imagePainter.setPen(Qt::red);
+    imagePainter.setFont(QFontDatabase::systemFont(QFontDatabase::GeneralFont));
+    imagePainter.setRenderHints(QPainter::TextAntialiasing);
+    imagePainter.drawText(img.rect(), Qt::AlignCenter,"Text example");
+    imagePainter.end();
+    imagePainter.begin(&backing);
+    imagePainter.drawImage(backing.rect(), img);
+    imagePainter.end();
+    for (int y = 0; y < backing.height(); ++y) {
+        for (int x = 0; x < backing.width(); ++x) {
+            const uint32_t px = backing.pixel(x, y);
+            // Red over white, should always be full red.
+            QCOMPARE(qRed(px), 255);
         }
     }
 }

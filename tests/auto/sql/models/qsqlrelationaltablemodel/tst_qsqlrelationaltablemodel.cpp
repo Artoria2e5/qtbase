@@ -402,6 +402,26 @@ void tst_QSqlRelationalTableModel::setData()
         QCOMPARE(model.data(model.index(0,1)).toString(), QString("Hr"));
     }
 
+    // verify that clearing a foreign key works
+    {
+        QSqlRelationalTableModel model(0, db);
+
+        model.setTable(reltest1);
+        model.setRelation(2, QSqlRelation(reltest2, "id", "title"));
+        model.setSort(0, Qt::AscendingOrder);
+        QVERIFY_SQL(model, select());
+
+        QVERIFY(model.setData(model.index(0, 1), QString("harry2")));
+        QVERIFY(model.setData(model.index(0, 2), 2));
+
+        QCOMPARE(model.data(model.index(0, 1)).toString(), QString("harry2"));
+        QCOMPARE(model.data(model.index(0, 2)).toString(), QString("mister"));
+
+        QVERIFY(model.setData(model.index(0, 2), QVariant())); // clear foreign key
+
+        QCOMPARE(model.data(model.index(0, 1)).toString(), QString("harry2"));
+        QCOMPARE(model.data(model.index(0, 2)).toString(), QString()); // check that foreign value is not visible
+    }
 }
 
 void tst_QSqlRelationalTableModel::multipleRelation()
@@ -456,6 +476,29 @@ void tst_QSqlRelationalTableModel::insertRecord()
     model.setSort(0, Qt::AscendingOrder);
     QVERIFY_SQL(model, select());
 
+    constexpr auto fkTitleKey = 4711;
+    constexpr auto fkTitleVal = "new title";
+    {
+        auto relModel = model.relationModel(2);
+        // make sure populateDictionary() is called
+        relModel->select();
+
+        QSqlRecord rec;
+        QSqlField f1("id", QMetaType(QMetaType::Int));
+        QSqlField f2("title", QMetaType(QMetaType::QString));
+
+        f1.setValue(fkTitleKey);
+        f2.setValue(fkTitleVal);
+
+        f1.setGenerated(true);
+        f2.setGenerated(true);
+
+        rec.append(f1);
+        rec.append(f2);
+
+        QVERIFY(relModel->insertRecord(-1, rec));
+    }
+
     QSqlRecord rec;
     QSqlField f1("id", QMetaType(QMetaType::Int));
     QSqlField f2("name", QMetaType(QMetaType::QString));
@@ -464,7 +507,7 @@ void tst_QSqlRelationalTableModel::insertRecord()
 
     f1.setValue(7);
     f2.setValue("test");
-    f3.setValue(1);
+    f3.setValue(fkTitleKey);
     f4.setValue(2);
 
     f1.setGenerated(true);
@@ -481,7 +524,7 @@ void tst_QSqlRelationalTableModel::insertRecord()
 
     QCOMPARE(model.data(model.index(4, 0)).toInt(), 7);
     QCOMPARE(model.data(model.index(4, 1)).toString(), QString("test"));
-    QCOMPARE(model.data(model.index(4, 2)).toString(), QString("herr"));
+    QCOMPARE(model.data(model.index(4, 2)).toString(), QString(fkTitleVal));
 
     // In LeftJoin mode, two additional rows are fetched
     model.setJoinMode(QSqlRelationalTableModel::LeftJoin);
@@ -489,7 +532,7 @@ void tst_QSqlRelationalTableModel::insertRecord()
 
     QCOMPARE(model.data(model.index(6, 0)).toInt(), 7);
     QCOMPARE(model.data(model.index(6, 1)).toString(), QString("test"));
-    QCOMPARE(model.data(model.index(6, 2)).toString(), QString("herr"));
+    QCOMPARE(model.data(model.index(6, 2)).toString(), QString(fkTitleVal));
 }
 
 void tst_QSqlRelationalTableModel::setRecord()

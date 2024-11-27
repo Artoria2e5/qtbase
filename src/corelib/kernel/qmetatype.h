@@ -457,8 +457,12 @@ public:
     explicit constexpr QMetaType(const QtPrivate::QMetaTypeInterface *d) : d_ptr(d) {}
     constexpr QMetaType() = default;
 
+#if QT_CORE_REMOVED_SINCE(6, 9)
     bool isValid() const;
     bool isRegistered() const;
+#endif
+    constexpr bool isValid(QT6_DECL_NEW_OVERLOAD) const noexcept;
+    inline bool isRegistered(QT6_DECL_NEW_OVERLOAD) const noexcept;
     void registerType() const
     {
         // "register" is a reserved keyword
@@ -471,7 +475,6 @@ public:
     // unused int parameter is used to avoid ODR violation
     int id(int = 0) const
     {
-        // keep in sync with the version in removed_api.cpp
         return registerHelper();
     }
 #endif
@@ -763,9 +766,9 @@ public:
     static void unregisterMetaType(QMetaType type);
 
 #if QT_VERSION < QT_VERSION_CHECK(7, 0, 0)
-    const QtPrivate::QMetaTypeInterface *iface() { return d_ptr; }
+    constexpr const QtPrivate::QMetaTypeInterface *iface() { return d_ptr; }
 #endif
-    const QtPrivate::QMetaTypeInterface *iface() const { return d_ptr; }
+    constexpr const QtPrivate::QMetaTypeInterface *iface() const { return d_ptr; }
 
 private:
     static bool isDefaultConstructible(const QtPrivate::QMetaTypeInterface *) noexcept Q_DECL_PURE_FUNCTION;
@@ -779,7 +782,6 @@ private:
     static int registerHelper(const QtPrivate::QMetaTypeInterface *iface);
     int registerHelper() const
     {
-        // keep in sync with the QMetaType::id() version in removed_api.cpp
         if (d_ptr) {
             if (int id = d_ptr->typeId.loadRelaxed())
                 return id;
@@ -1272,28 +1274,6 @@ namespace QtPrivate {
     constexpr bool IsUnsignedEnum = false;
     template<typename T>
     constexpr bool IsUnsignedEnum<T, true> = !std::is_signed_v<std::underlying_type_t<T>>;
-
-    template<typename T>
-    struct QMetaTypeTypeFlags
-    {
-        enum { Flags = (QTypeInfo<T>::isRelocatable ? QMetaType::RelocatableType : 0)
-                     | ((!std::is_default_constructible_v<T> || !QTypeInfo<T>::isValueInitializationBitwiseZero) ? QMetaType::NeedsConstruction : 0)
-                     | (!std::is_trivially_destructible_v<T> ? QMetaType::NeedsDestruction : 0)
-                     | (!std::is_trivially_copy_constructible_v<T> ? QMetaType::NeedsCopyConstruction : 0)
-                     | (!std::is_trivially_move_constructible_v<T> ? QMetaType::NeedsMoveConstruction : 0)
-                     | (IsPointerToTypeDerivedFromQObject<T>::Value ? QMetaType::PointerToQObject : 0)
-                     | (IsSharedPointerToTypeDerivedFromQObject<T>::Value ? QMetaType::SharedPointerToQObject : 0)
-                     | (IsWeakPointerToTypeDerivedFromQObject<T>::Value ? QMetaType::WeakPointerToQObject : 0)
-                     | (IsTrackingPointerToTypeDerivedFromQObject<T>::Value ? QMetaType::TrackingPointerToQObject : 0)
-                     | (IsEnumOrFlags<T>::value ? QMetaType::IsEnumeration : 0)
-                     | (IsGadgetHelper<T>::IsGadgetOrDerivedFrom ? QMetaType::IsGadget : 0)
-                     | (IsPointerToGadgetHelper<T>::IsGadgetOrDerivedFrom ? QMetaType::PointerToGadget : 0)
-                     | (std::is_pointer_v<T> ? QMetaType::IsPointer : 0)
-                     | (IsUnsignedEnum<T> ? QMetaType::IsUnsignedEnumeration : 0)
-                     | (IsQmlListType<T> ? QMetaType::IsQmlList : 0)
-                     | (std::is_const_v<std::remove_pointer_t<T>> ? QMetaType::IsConst : 0)
-             };
-    };
 
     template<typename T, bool defined>
     struct MetaTypeDefinedHelper
@@ -2425,7 +2405,44 @@ class QMetaTypeForType
 {
 public:
     static constexpr decltype(typenameHelper<S>()) name = typenameHelper<S>();
-    static constexpr unsigned Flags = QMetaTypeTypeFlags<S>::Flags;
+
+    static constexpr unsigned flags()
+    {
+        uint flags = 0;
+        if constexpr (QTypeInfo<S>::isRelocatable)
+            flags |= QMetaType::RelocatableType;
+        if constexpr (!std::is_default_constructible_v<S> || !QTypeInfo<S>::isValueInitializationBitwiseZero)
+            flags |= QMetaType::NeedsConstruction;
+        if constexpr (!std::is_trivially_destructible_v<S>)
+            flags |= QMetaType::NeedsDestruction;
+        if constexpr (!std::is_trivially_copy_constructible_v<S>)
+            flags |= QMetaType::NeedsCopyConstruction;
+        if constexpr (!std::is_trivially_move_constructible_v<S>)
+            flags |= QMetaType::NeedsMoveConstruction;
+        if constexpr (IsPointerToTypeDerivedFromQObject<S>::Value)
+            flags |= QMetaType::PointerToQObject;
+        if constexpr (IsSharedPointerToTypeDerivedFromQObject<S>::Value)
+            flags |= QMetaType::SharedPointerToQObject;
+        if constexpr (IsWeakPointerToTypeDerivedFromQObject<S>::Value)
+            flags |= QMetaType::WeakPointerToQObject;
+        if constexpr (IsTrackingPointerToTypeDerivedFromQObject<S>::Value)
+            flags |= QMetaType::TrackingPointerToQObject;
+        if constexpr (IsEnumOrFlags<S>::value)
+            flags |= QMetaType::IsEnumeration;
+        if constexpr (IsGadgetHelper<S>::IsGadgetOrDerivedFrom)
+            flags |= QMetaType::IsGadget;
+        if constexpr (IsPointerToGadgetHelper<S>::IsGadgetOrDerivedFrom)
+            flags |= QMetaType::PointerToGadget;
+        if constexpr (std::is_pointer_v<S>)
+            flags |= QMetaType::IsPointer;
+        if constexpr (IsUnsignedEnum<S>)
+            flags |= QMetaType::IsUnsignedEnumeration;
+        if constexpr (IsQmlListType<S>)
+            flags |= QMetaType::IsQmlList;
+        if constexpr (std::is_const_v<std::remove_pointer_t<S>>)
+            flags |= QMetaType::IsConst;
+        return flags;
+    }
 
     static constexpr QMetaTypeInterface::DefaultCtrFn getDefaultCtr()
     {
@@ -2487,6 +2504,12 @@ public:
     }
 };
 
+// Temporary until sources are updated
+template <typename T> struct QMetaTypeTypeFlags
+{
+    enum { Flags = QMetaTypeForType<T>::flags() };
+};
+
 template<typename T>
 struct QMetaTypeInterfaceWrapper
 {
@@ -2500,7 +2523,7 @@ struct QMetaTypeInterfaceWrapper
         /*.revision=*/ QMetaTypeInterface::CurrentRevision,
         /*.alignment=*/ alignof(T),
         /*.size=*/ sizeof(T),
-        /*.flags=*/ QMetaTypeForType<T>::Flags,
+        /*.flags=*/ QMetaTypeForType<T>::flags(),
         /*.typeId=*/ BuiltinMetaType<T>::value,
         /*.metaObjectFn=*/ MetaObjectForType<T>::metaObjectFunction,
         /*.name=*/ QMetaTypeForType<T>::getName(),
@@ -2516,6 +2539,8 @@ struct QMetaTypeInterfaceWrapper
         /*.legacyRegisterOp=*/ QMetaTypeForType<T>::getLegacyRegister()
     };
 };
+template<typename T> struct QMetaTypeInterfaceWrapper<T &> {};
+
 
 #if !defined(Q_OS_WIN) && defined(Q_CC_CLANG)
 #  pragma GCC visibility pop
@@ -2577,21 +2602,19 @@ QT_FOR_EACH_STATIC_CORE_TEMPLATE(QT_METATYPE_DECLARE_EXTERN_TEMPLATE_ITER)
 #endif
 
 template<typename T>
-struct qRemovePointerLike
+struct QRemovePointerLike
 {
     using type = std::remove_pointer_t<T>;
 };
 
 #define Q_REMOVE_POINTER_LIKE_IMPL(Pointer) \
 template <typename T> \
-struct qRemovePointerLike<Pointer<T>> \
+struct QRemovePointerLike<Pointer<T>> \
 { \
     using type = T; \
 };
 
 QT_FOR_EACH_AUTOMATIC_TEMPLATE_SMART_POINTER(Q_REMOVE_POINTER_LIKE_IMPL)
-template<typename T>
-using qRemovePointerLike_t = typename qRemovePointerLike<T>::type;
 #undef Q_REMOVE_POINTER_LIKE_IMPL
 
 template<typename T, typename ForceComplete_>
@@ -2615,7 +2638,7 @@ constexpr const QMetaTypeInterface *qTryMetaTypeInterfaceForType()
     using T = typename TypeCompletePair::type;
     using ForceComplete = typename TypeCompletePair::ForceComplete;
     using Ty = typename MetatypeDecay<T>::type;
-    using Tz = qRemovePointerLike_t<Ty>;
+    using Tz = typename QRemovePointerLike<Ty>::type;
 
     if constexpr (std::is_void_v<Tz>) {
         // early out to avoid expanding the rest of the templates
@@ -2640,6 +2663,16 @@ constexpr QMetaType QMetaType::fromType()
 {
     QtPrivate::checkTypeIsSuitableForMetaType<T>();
     return QMetaType(QtPrivate::qMetaTypeInterfaceForType<T>());
+}
+
+constexpr bool QMetaType::isValid(QT6_IMPL_NEW_OVERLOAD) const noexcept
+{
+    return d_ptr;
+}
+
+bool QMetaType::isRegistered(QT6_IMPL_NEW_OVERLOAD) const noexcept
+{
+    return d_ptr && d_ptr->typeId.loadRelaxed();
 }
 
 constexpr qsizetype QMetaType::sizeOf() const

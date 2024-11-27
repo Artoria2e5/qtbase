@@ -25,10 +25,20 @@ function (qt_internal_setup_wasm_target_properties wasmTarget)
         target_compile_options("${wasmTarget}" INTERFACE -O2 -msimd128 -msse -msse2)
     endif()
 
-    # wasm exceptions
+    # exceptions
     if (QT_FEATURE_wasm_exceptions)
         target_compile_options("${wasmTarget}" INTERFACE -fwasm-exceptions)
         target_link_options("${wasmTarget}" INTERFACE -fwasm-exceptions)
+    elseif(QT_FEATURE_exceptions)
+        # add link option only, compile option is added in cross-platform code
+        target_link_options("${wasmTarget}" INTERFACE -fexceptions)
+    endif()
+
+    # setjmp/longjmp type. The type is "emscripten" by default, but must
+    # be set to "wasm" when wasm-exceptions are used, for compatibility reasons.
+    if (QT_FEATURE_wasm_exceptions)
+        target_compile_options("${wasmTarget}" INTERFACE -s SUPPORT_LONGJMP=wasm)
+        target_link_options("${wasmTarget}" INTERFACE -s SUPPORT_LONGJMP=wasm)
     endif()
 
     if (QT_FEATURE_thread)

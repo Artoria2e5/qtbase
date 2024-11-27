@@ -21,6 +21,7 @@
 #include <QtCore/qjniobject.h>
 #include <QtCore/qjnienvironment.h>
 #include <QtCore/qjnitypes.h>
+#include <QtCore/qthread.h>
 
 QT_BEGIN_NAMESPACE
 
@@ -51,6 +52,8 @@ public:
     bool hasChildrenDefault(const QModelIndex &parent) const;
     QModelIndex sibling(int row, int column, const QModelIndex &parent) const override;
     QModelIndex siblingDefault(int row, int column, const QModelIndex &parent);
+    bool setData(const QModelIndex &index, const QVariant &value, int role = Qt::EditRole) override;
+    bool setDataDefault(const QModelIndex &index, const QVariant &value, int role);
 
     Q_REQUIRED_RESULT static QAbstractItemModel *
     nativeInstance(QtJniTypes::JQtAbstractItemModel itemModel);
@@ -58,34 +61,58 @@ public:
     static QJniObject createProxy(QAbstractItemModel *abstractClass);
 
     template <typename Func, typename... Args>
-    static auto invokeNativeProxyMethod(JNIEnv */*env*/, jobject jvmObject, Func func, Args &&...args)
+    static auto invokeNativeProxyMethod(JNIEnv * /*env*/, jobject jvmObject, Func &&func,
+                                        Args &&...args)
     {
         Q_ASSERT(jvmObject);
         auto model = qobject_cast<QAndroidItemModelProxy *>(nativeInstance(jvmObject));
         Q_ASSERT(model);
-        return std::invoke(func, model, std::forward<Args>(args)...);
+        return safeCall(model, std::forward<Func>(func), std::forward<Args>(args)...);
     }
 
     template <typename Func, typename... Args>
-    static auto invokeNativeMethod(JNIEnv */*env*/, jobject jvmObject, Func func, Args &&...args)
+    static auto invokeNativeMethod(JNIEnv * /*env*/, jobject jvmObject, Func &&func, Args &&...args)
     {
         Q_ASSERT(jvmObject);
         auto model = nativeInstance(jvmObject);
         Q_ASSERT(model);
-        return std::invoke(func, model, std::forward<Args>(args)...);
+        return safeCall(model, std::forward<Func>(func), std::forward<Args>(args)...);
     }
 
     template <typename Func1, typename Func2, typename... Args>
-    static auto invokeNativeImpl(JNIEnv */*env*/, jobject jvmObject, Func1 defaultFunc, Func2 func,
-                                 Args &&...args)
+    static auto invokeNativeImpl(JNIEnv * /*env*/, jobject jvmObject, Func1 &&defaultFunc,
+                                 Func2 &&func, Args &&...args)
     {
         Q_ASSERT(jvmObject);
         auto nativeModel = nativeInstance(jvmObject);
         auto nativeProxyModel = qobject_cast<QAndroidItemModelProxy *>(nativeModel);
         if (nativeProxyModel)
-            return std::invoke(defaultFunc, nativeProxyModel, std::forward<Args>(args)...);
+            return safeCall(nativeProxyModel, std::forward<Func1>(defaultFunc),
+                            std::forward<Args>(args)...);
         else
-            return std::invoke(func, nativeModel, std::forward<Args>(args)...);
+            return safeCall(nativeModel, std::forward<Func2>(func), std::forward<Args>(args)...);
+    }
+
+    template <typename Object, typename Func, typename... Args>
+    static auto safeCall(Object *object, Func &&func, Args &&...args)
+    {
+        using ReturnType = decltype(std::invoke(std::forward<Func>(func), object,
+                                                std::forward<Args>(args)...));
+
+        if constexpr (std::is_void_v<ReturnType>) {
+            QMetaObject::invokeMethod(object, std::forward<Func>(func), Qt::AutoConnection,
+                                      std::forward<Args>(args)...);
+        } else {
+            ReturnType returnValue;
+
+            const auto connectionType = object->thread() == QThread::currentThread()
+                    ? Qt::DirectConnection
+                    : Qt::BlockingQueuedConnection;
+
+            QMetaObject::invokeMethod(object, std::forward<Func>(func), connectionType,
+                                      qReturnArg(returnValue), std::forward<Args>(args)...);
+            return returnValue;
+        }
     }
 
     static jint jni_columnCount(JNIEnv *env, jobject object, JQtModelIndex parent);
@@ -176,6 +203,14 @@ public:
     static jobject jni_sibling(JNIEnv *env, jobject object, jint row, jint column,
                                  JQtModelIndex parent);
     Q_DECLARE_JNI_NATIVE_METHOD_IN_CURRENT_SCOPE(jni_sibling)
+
+    static void jni_dataChanged(JNIEnv *env, jobject object, JQtModelIndex topLeft,
+                                JQtModelIndex bottomRight, QJniArray<jint> roles);
+    Q_DECLARE_JNI_NATIVE_METHOD_IN_CURRENT_SCOPE(jni_dataChanged)
+
+    static jboolean jni_setData(JNIEnv *env, jobject object, JQtModelIndex index, jobject &value,
+                                jint role);
+    Q_DECLARE_JNI_NATIVE_METHOD_IN_CURRENT_SCOPE(jni_setData)
 
     static bool registerAbstractNatives(QJniEnvironment &env);
     static bool registerProxyNatives(QJniEnvironment &env);

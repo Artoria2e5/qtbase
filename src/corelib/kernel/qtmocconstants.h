@@ -29,7 +29,8 @@ namespace QtMocConstants {
 //                        and metamethods store a flag stating whether they are const
 // revision 11 is Qt 6.5: The metatype for void is stored in the metatypes array
 // revision 12 is Qt 6.6: It adds the metatype for enums
-enum { OutputRevision = 12 };   // Used by moc, qmetaobjectbuilder and qdbus
+// revision 13 is Qt 6.9: Adds support for 64-bit QFlags and moves the method revision
+enum { OutputRevision = 13 };   // Used by moc, qmetaobjectbuilder and qdbus
 
 enum PropertyFlags : uint {
     Invalid = 0x00000000,
@@ -49,6 +50,7 @@ enum PropertyFlags : uint {
     Required = 0x01000000,
     Bindable = 0x02000000,
 };
+inline constexpr PropertyFlags DefaultPropertyFlags { Readable | Designable | Scriptable | Stored };
 
 enum MethodFlags : uint {
     AccessPrivate = 0x00,
@@ -71,9 +73,10 @@ enum MethodFlags : uint {
 };
 
 enum MetaObjectFlag : uint {
-    DynamicMetaObject = 0x01,
+    DynamicMetaObject = 0x01,               // is derived from QAbstractDynamicMetaObject
     RequiresVariantMetaObject = 0x02,
     PropertyAccessInStaticMetaCall = 0x04,  // since Qt 5.5, property code is in the static metacall
+    AllocatedMetaObject = 0x08,             // meta object was allocated in dynamic memory (and may be freed)
 };
 
 enum MetaDataFlags : uint {
@@ -85,6 +88,7 @@ enum MetaDataFlags : uint {
 enum EnumFlags : uint {
     EnumIsFlag = 0x1,
     EnumIsScoped = 0x2,
+    EnumIs64Bit = 0x40,
 };
 
 } // namespace QtMocConstants

@@ -2079,6 +2079,10 @@ bool QGuiApplication::event(QEvent *e)
                 postEvent(topLevelWindow, new QEvent(e->type()));
         }
         break;
+    case QEvent::ThemeChange:
+        for (auto *w : QGuiApplication::allWindows())
+            forwardEvent(w, e);
+        break;
     case QEvent::Quit:
         // Close open windows. This is done in order to deliver de-expose
         // events while the event loop is still running.
@@ -2381,8 +2385,8 @@ void QGuiApplicationPrivate::processMouseEvent(QWindowSystemInterfacePrivate::Mo
         mouse_buttons = e->buttons;
         if (mousePress) {
             ulong doubleClickInterval = static_cast<ulong>(QGuiApplication::styleHints()->mouseDoubleClickInterval());
-            doubleClick = e->timestamp - lastPressTimestamp
-                        < doubleClickInterval && button == mousePressButton;
+            const auto timestampDelta = e->timestamp - lastPressTimestamp;
+            doubleClick = timestampDelta > 0 && timestampDelta < doubleClickInterval && button == mousePressButton;
             mousePressButton = button;
             lastPressTimestamp = e ->timestamp;
         }
@@ -2455,7 +2459,7 @@ void QGuiApplicationPrivate::processMouseEvent(QWindowSystemInterfacePrivate::Mo
 
     if (doubleClick && (ev.type() == QEvent::MouseButtonPress)) {
         // QtBUG-25831, used to suppress delivery in qwidgetwindow.cpp
-        QMutableSinglePointEvent::from(ev).setDoubleClick();
+        QMutableSinglePointEvent::setDoubleClick(&ev, true);
     }
 
     QGuiApplication::sendSpontaneousEvent(window, &ev);
@@ -2781,10 +2785,10 @@ void QGuiApplicationPrivate::processSafeAreaMarginsChangedEvent(QWindowSystemInt
     if (wse->window.isNull())
         return;
 
-    // Handle by forwarding directly to QWindowPrivate, instead of sending spontaneous
-    // QEvent like most other functions, as there's no QEvent type for the safe area
-    // change, and we don't want to add one until we know that this is a good API.
-    qt_window_private(wse->window)->processSafeAreaMarginsChanged();
+    emit wse->window->safeAreaMarginsChanged(wse->window->safeAreaMargins());
+
+    QEvent event(QEvent::SafeAreaMarginsChange);
+    QGuiApplication::sendSpontaneousEvent(wse->window, &event);
 }
 
 void QGuiApplicationPrivate::processThemeChanged(QWindowSystemInterfacePrivate::ThemeChangeEvent *tce)
@@ -2795,9 +2799,10 @@ void QGuiApplicationPrivate::processThemeChanged(QWindowSystemInterfacePrivate::
     QIconPrivate::clearIconCache();
 
     QEvent themeChangeEvent(QEvent::ThemeChange);
-    const QWindowList windows = tce->window ? QWindowList{tce->window} : window_list;
-    for (auto *window : windows)
-        QGuiApplication::sendSpontaneousEvent(window, &themeChangeEvent);
+    if (tce->window)
+        QGuiApplication::sendSpontaneousEvent(tce->window, &themeChangeEvent);
+    else
+        QGuiApplication::sendSpontaneousEvent(qGuiApp, &themeChangeEvent);
 }
 
 void QGuiApplicationPrivate::handleThemeChanged()
@@ -3072,6 +3077,7 @@ void QGuiApplicationPrivate::processContextMenuEvent(QWindowSystemInterfacePriva
 
     QContextMenuEvent ev(QContextMenuEvent::Keyboard, e->pos, e->globalPos, e->modifiers);
     QGuiApplication::sendSpontaneousEvent(e->window.data(), &ev);
+    e->eventAccepted = ev.isAccepted();
 }
 #endif
 

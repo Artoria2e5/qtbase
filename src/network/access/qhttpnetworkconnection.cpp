@@ -16,7 +16,6 @@
 #include <private/qsocketabstraction_p.h>
 
 #include <qbuffer.h>
-#include <qpair.h>
 #include <qdebug.h>
 #include <qspan.h>
 #include <qvarlengtharray.h>
@@ -112,10 +111,12 @@ void QHttpNetworkConnectionPrivate::pauseConnection()
             else
 #endif
                 QAbstractSocketPrivate::pauseSocketNotifiers(absSocket);
+#if QT_CONFIG(localserver)
         } else if (qobject_cast<QLocalSocket *>(channels[i].socket)) {
             // @todo how would we do this?
 #if 0 // @todo Enable this when there is a debug category for this
             qDebug() << "Should pause socket but there is no way to do it for local sockets";
+#endif
 #endif
         }
     }
@@ -137,9 +138,11 @@ void QHttpNetworkConnectionPrivate::resumeConnection()
             // Resume pending upload if needed
             if (channels[i].state == QHttpNetworkConnectionChannel::WritingState)
                 QMetaObject::invokeMethod(&channels[i], "_q_uploadDataReadyRead", Qt::QueuedConnection);
+#if QT_CONFIG(localserver)
         } else if (qobject_cast<QLocalSocket *>(channels[i].socket)) {
 #if 0 // @todo Enable this when there is a debug category for this
             qDebug() << "Should resume socket but there is no way to do it for local sockets";
+#endif
 #endif
         }
     }
@@ -626,7 +629,7 @@ QHttpNetworkReply* QHttpNetworkConnectionPrivate::queueRequest(const QHttpNetwor
     reply->setRequest(request);
     reply->d_func()->connection = q;
     reply->d_func()->connectionChannel = &channels[0]; // will have the correct one set later
-    HttpMessagePair pair = qMakePair(request, reply);
+    HttpMessagePair pair = std::pair(request, reply);
 
     if (request.isPreConnect())
         preConnectRequests++;

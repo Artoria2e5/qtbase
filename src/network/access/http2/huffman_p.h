@@ -15,8 +15,6 @@
 // We mean it.
 //
 
-#include <QtCore/private/qglobal_p.h>
-
 QT_BEGIN_NAMESPACE
 
 class QByteArray;
@@ -115,8 +113,8 @@ public:
 
 private:
     quint32 addTable(quint32 prefixLength, quint32 indexLength);
-    PrefixTableEntry tableEntry(const PrefixTable &table, quint32 index);
-    void setTableEntry(const PrefixTable &table, quint32 index, const PrefixTableEntry &entry);
+    PrefixTableEntry tableEntry(PrefixTable table, quint32 index);
+    void setTableEntry(PrefixTable table, quint32 index, PrefixTableEntry entry);
 
     std::vector<PrefixTable> prefixTables;
     std::vector<PrefixTableEntry> tableData;

@@ -2,18 +2,19 @@
 // Copyright (C) 2016 Intel Corporation.
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only
 
-#include <qurl.h>
-#include <QtCore/QDebug>
+#include <QtTest/qtest.h>
 
-#include <QTest>
+#include <QtConcurrent/qtconcurrentrun.h>
+
+#include <QtCore/qcoreapplication.h>
+#include <QtCore/qdebug.h>
+#include <QtCore/qdiriterator.h>
+#include <QtCore/qfileinfo.h>
+#include <QtCore/qmap.h>
+#include <QtCore/qthreadpool.h>
+#include <QtCore/qurl.h>
+
 #include <QtTest/private/qcomparisontesthelper_p.h>
-#include <QDirIterator>
-
-#include <qcoreapplication.h>
-
-#include <qfileinfo.h>
-#include <qmap.h>
-
 #include <QtTest/private/qemulationdetector_p.h>
 
 using namespace Qt::StringLiterals;
@@ -600,7 +601,7 @@ void tst_QUrl::setUrl()
 
         QUrl url2("../../////kdebase/konqueror");
         QCOMPARE(url.resolved(url2).toString(),
-                QString::fromLatin1("file:///usr/local/src/kde2/////kdebase/konqueror"));
+                QString::fromLatin1("file:///usr/local/src/kde2/kdebase/konqueror"));
     }
 
     {
@@ -929,16 +930,16 @@ void tst_QUrl::resolving_data()
     QTest::newRow(".-on-//") << "http://a/b/c//" << "." << "http://a/b/c//";
     QTest::newRow("./-on-//") << "http://a/b/c//" << "./" << "http://a/b/c//";
     QTest::newRow(".//-on-//") << "http://a/b/c//" << ".//" << "http://a/b/c///";  // weird but correct
-    QTest::newRow("..-on-//") << "http://a/b/c//" << ".." << "http://a/b/";
-    QTest::newRow("../-on-//") << "http://a/b/c//" << "../" << "http://a/b/";
-    QTest::newRow("..//-on-//") << "http://a/b/c//" << "..//" << "http://a/b//";
-    QTest::newRow("../g-on-//") << "http://a/b/c//" << "../g" << "http://a/b/g";
-    QTest::newRow("..//g-on-//") << "http://a/b/c//" << "..//g" << "http://a/b//g";
-    QTest::newRow("../..-on-//") << "http://a/b/c//" << "../.." << "http://a/";
-    QTest::newRow("../../-on-//") << "http://a/b/c//" << "../../" << "http://a/";
-    QTest::newRow("../..//-on-//") << "http://a/b/c//" << "../..//" << "http://a//";
-    QTest::newRow("../../g-on-//") << "http://a/b/c//" << "../../g" << "http://a/g";
-    QTest::newRow("../..//g-on-//") << "http://a/b/c//" << "../..//g" << "http://a//g";
+    QTest::newRow("..-on-//") << "http://a/b/c//" << ".." << "http://a/b/c/";
+    QTest::newRow("../-on-//") << "http://a/b/c//" << "../" << "http://a/b/c/";
+    QTest::newRow("..//-on-//") << "http://a/b/c//" << "..//" << "http://a/b/c//";
+    QTest::newRow("../g-on-//") << "http://a/b/c//" << "../g" << "http://a/b/c/g";
+    QTest::newRow("..//g-on-//") << "http://a/b/c//" << "..//g" << "http://a/b/c//g";
+    QTest::newRow("../..-on-//") << "http://a/b/c//" << "../.." << "http://a/b/";
+    QTest::newRow("../../-on-//") << "http://a/b/c//" << "../../" << "http://a/b/";
+    QTest::newRow("../..//-on-//") << "http://a/b/c//" << "../..//" << "http://a/b//";
+    QTest::newRow("../../g-on-//") << "http://a/b/c//" << "../../g" << "http://a/b/g";
+    QTest::newRow("../..//g-on-//") << "http://a/b/c//" << "../..//g" << "http://a/b//g";
 
     // 5.4.2  Abnormal Examples (http://www.ietf.org/rfc/rfc3986.txt)
 
@@ -1487,6 +1488,11 @@ void tst_QUrl::fromLocalFileNormalize_data()
 
     QTest::newRow("absolute-path") << QString::fromLatin1("/a.txt") << QString::fromLatin1("file:///a.txt") << QString::fromLatin1("file:///a.txt");
     QTest::newRow("relative-path") << QString::fromLatin1("a.txt") << QString::fromLatin1("file:a.txt") << QString::fromLatin1("file:a.txt");
+
+    QTest::newRow("absolute-path-trailing-slash") << u"/b/"_s << u"file:///b/"_s << u"file:///b/"_s;
+    QTest::newRow("absolute-path-no-trailing-slash") << u"/b"_s << u"file:///b"_s << u"file:///b"_s;
+    QTest::newRow("absolute-path-2-trailing-slashes") << u"/b//"_s << u"file:///b//"_s << u"file:///b/"_s;
+
     QTest::newRow("percent") << QString::fromLatin1("/a%.txt") << QString::fromLatin1("file:///a%25.txt")
                              << QString::fromLatin1("file:///a%25.txt");
     QTest::newRow("percent25") << QString::fromLatin1("/a%25.txt") << QString::fromLatin1("file:///a%2525.txt")
@@ -1497,7 +1503,9 @@ void tst_QUrl::fromLocalFileNormalize_data()
     QTest::newRow("relative-dot-dot") << QString::fromLatin1("././a.txt") << QString::fromLatin1("file:././a.txt") << QString::fromLatin1("file:a.txt");
     QTest::newRow("relative-path-dotdot") << QString::fromLatin1("b/../a.txt") << QString::fromLatin1("file:b/../a.txt") << QString::fromLatin1("file:a.txt");
     QTest::newRow("absolute-path-dotdot") << QString::fromLatin1("/b/../a.txt") << QString::fromLatin1("file:///b/../a.txt") << QString::fromLatin1("file:///a.txt");
-    QTest::newRow("absolute-path-dot") << QString::fromLatin1("/b/.") << QString::fromLatin1("file:///b/.") << QString::fromLatin1("file:///b");
+    QTest::newRow("absolute-path-slash") << QString::fromLatin1("/b/") << QString::fromLatin1("file:///b/") << QString::fromLatin1("file:///b/");
+    QTest::newRow("absolute-path-slahs-dot") << QString::fromLatin1("/b/.") << QString::fromLatin1("file:///b/.") << QString::fromLatin1("file:///b/");
+    QTest::newRow("absolute-path-slahs-dot-slash") << QString::fromLatin1("/b/./") << QString::fromLatin1("file:///b/./") << QString::fromLatin1("file:///b/");
 }
 
 void tst_QUrl::fromLocalFileNormalize()
@@ -2927,6 +2935,7 @@ void tst_QUrl::stripTrailingSlash_data()
     QTest::newRow("file root") << "file:///" << "file:///" << "file:///" << "file:///";
     QTest::newRow("file_root_manyslashes") << "file://///" << "file:///" << "file://///" << "file:///";
     QTest::newRow("no path") << "remote://" << "remote://" << "remote://" << "remote://";
+    QTest::newRow("no authority") << "/root/test/../foo/bar" << "/root/test/../foo/bar" << "/root/test/../foo/" << "/root/test/../foo";
 }
 
 void tst_QUrl::stripTrailingSlash()
@@ -4242,9 +4251,6 @@ void tst_QUrl::testThreadingHelper()
     }
 }
 
-#include <QThreadPool>
-#include <QtConcurrent>
-
 void tst_QUrl::testThreading()
 {
     enum { Count = 100 };
@@ -4370,30 +4376,68 @@ void tst_QUrl::normalizeRemotePaths_data()
 {
     QTest::addColumn<QUrl>("url");
     QTest::addColumn<QString>("expected");
+    QTest::addColumn<QString>("expectedNoFilename");
 
-    QTest::newRow("dotdot-slashslash") << QUrl("http://qt-project.org/some/long/..//path") << "http://qt-project.org/some//path";
-    QTest::newRow("slashslash-dotdot") << QUrl("http://qt-project.org/some//../path") << "http://qt-project.org/some/path";
-    QTest::newRow("slashslash-dotdot2") << QUrl("http://qt-project.org/some//path/../") << "http://qt-project.org/some//";
-    QTest::newRow("dot-slash") << QUrl("http://qt-project.org/some/./path") << "http://qt-project.org/some/path";
-    QTest::newRow("slashslash-dot-slashslash") << QUrl("http://qt-project.org/some//.//path") << "http://qt-project.org/some///path";
-    QTest::newRow("dot-slashslash") << QUrl("http://qt-project.org/some/.//path") << "http://qt-project.org/some//path";
-    QTest::newRow("multiple-slashes") << QUrl("http://qt-project.org/some//path") << "http://qt-project.org/some//path";
-    QTest::newRow("multiple-slashes4") << QUrl("http://qt-project.org/some////path") << "http://qt-project.org/some////path";
-    QTest::newRow("slashes-at-end") << QUrl("http://qt-project.org/some//") << "http://qt-project.org/some//";
-    QTest::newRow("dot-dotdot") << QUrl("http://qt-project.org/path/./../") << "http://qt-project.org/";
-    QTest::newRow("slash-dot-slash-dot-slash") << QUrl("http://qt-project.org/path//.//.//") << "http://qt-project.org/path////";
-    QTest::newRow("dotdot") << QUrl("http://qt-project.org/../") << "http://qt-project.org/";
-    QTest::newRow("dotdot-dotdot") << QUrl("http://qt-project.org/path/../../") << "http://qt-project.org/";
-    QTest::newRow("dot-dotdot-tail") << QUrl("http://qt-project.org/stem/path/./../tail") << "http://qt-project.org/stem/tail";
-    QTest::newRow("slash-dotdot-slash-tail") << QUrl("http://qt-project.org/stem/path//..//tail") << "http://qt-project.org/stem/path//tail";
+    QTest::newRow("dotdot-slashslash") << QUrl("http://qt-project.org/some/long/..//path")
+                                       << "http://qt-project.org/some//path"
+                                       << "http://qt-project.org/some//";
+    QTest::newRow("slashslash-dotdot") << QUrl("http://qt-project.org/some//../path")
+                                       << "http://qt-project.org/some/path"
+                                       << "http://qt-project.org/some/";
+    QTest::newRow("slashslash-dotdot2") << QUrl("http://qt-project.org/some//path/../")
+                                        << "http://qt-project.org/some//"
+                                        << "http://qt-project.org/some//";
+    QTest::newRow("dot-slash") << QUrl("http://qt-project.org/some/./path")
+                               << "http://qt-project.org/some/path"
+                               << "http://qt-project.org/some/";
+    QTest::newRow("slashslash-dot-slashslash") << QUrl("http://qt-project.org/some//.//path")
+                                               << "http://qt-project.org/some///path"
+                                               << "http://qt-project.org/some///";
+    QTest::newRow("dot-slashslash") << QUrl("http://qt-project.org/some/.//path")
+                                    << "http://qt-project.org/some//path"
+                                    << "http://qt-project.org/some//";
+    QTest::newRow("multiple-slashes") << QUrl("http://qt-project.org/some//path")
+                                      << "http://qt-project.org/some//path"
+                                      << "http://qt-project.org/some//";
+    QTest::newRow("multiple-slashes4") << QUrl("http://qt-project.org/some////path")
+                                       << "http://qt-project.org/some////path"
+                                       << "http://qt-project.org/some////";
+    QTest::newRow("slashes-at-end") << QUrl("http://qt-project.org/some//")
+                                    << "http://qt-project.org/some//"
+                                    << "http://qt-project.org/some//";
+    QTest::newRow("dot-dotdot") << QUrl("http://qt-project.org/path/./../")
+                                << "http://qt-project.org/"
+                                << "http://qt-project.org/";
+    QTest::newRow("slash-dot-slash-dot-slash") << QUrl("http://qt-project.org/path//.//.//")
+                                               << "http://qt-project.org/path////"
+                                               << "http://qt-project.org/path////";
+    QTest::newRow("dotdot") << QUrl("http://qt-project.org/../")
+                            << "http://qt-project.org/"
+                            << "http://qt-project.org/";
+    QTest::newRow("dotdot-tail") << QUrl("http://qt-project.org/root/test/../foo/bar")
+                                 << "http://qt-project.org/root/foo/bar"
+                                 << "http://qt-project.org/root/foo/";
+    QTest::newRow("dotdot-dotdot") << QUrl("http://qt-project.org/path/../../")
+                                   << "http://qt-project.org/"
+                                   << "http://qt-project.org/";
+    QTest::newRow("dot-dotdot-tail") << QUrl("http://qt-project.org/stem/path/./../tail")
+                                     << "http://qt-project.org/stem/tail"
+                                     << "http://qt-project.org/stem/";
+    QTest::newRow("slash-dotdot-slash-tail") << QUrl("http://qt-project.org/stem/path//..//tail")
+                                             << "http://qt-project.org/stem/path//tail"
+                                             << "http://qt-project.org/stem/path//";
 }
 
 void tst_QUrl::normalizeRemotePaths()
 {
     QFETCH(QUrl, url);
     QFETCH(QString, expected);
+    QFETCH(QString, expectedNoFilename);
 
     QCOMPARE(url.adjusted(QUrl::NormalizePathSegments).toString(), expected);
+    QCOMPARE(url.adjusted(QUrl::NormalizePathSegments | QUrl::RemoveFilename).toString(),
+             expectedNoFilename);
+    QCOMPARE(url.resolved(QUrl(".")).toString(), expectedNoFilename);
 }
 
 QTEST_MAIN(tst_QUrl)

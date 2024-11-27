@@ -96,6 +96,7 @@ void QAndroidPlatformWindow::initialize()
 
 QAndroidPlatformWindow::~QAndroidPlatformWindow()
 {
+    const auto guard = destructionGuard();
     if (window()->isTopLevel())
         platformScreen()->removeWindow(this);
 }
@@ -123,7 +124,7 @@ void QAndroidPlatformWindow::raise()
 
 QMargins QAndroidPlatformWindow::safeAreaMargins() const
 {
-    if ((m_windowState & Qt::WindowMaximized) && (window()->flags() & Qt::MaximizeUsingFullscreenGeometryHint)) {
+    if ((m_windowState & Qt::WindowMaximized) && (window()->flags() & Qt::ExpandedClientAreaHint)) {
         QRect availableGeometry = platformScreen()->availableGeometry();
         return QMargins(availableGeometry.left(), availableGeometry.top(),
                         availableGeometry.right(), availableGeometry.bottom());
@@ -165,7 +166,7 @@ void QAndroidPlatformWindow::setVisible(bool visible)
         if (window()->isTopLevel()) {
             updateSystemUiVisibility();
             if ((m_windowState & Qt::WindowFullScreen)
-                    || ((m_windowState & Qt::WindowMaximized) && (window()->flags() & Qt::MaximizeUsingFullscreenGeometryHint))) {
+                    || ((m_windowState & Qt::WindowMaximized) && (window()->flags() & Qt::ExpandedClientAreaHint))) {
                 setGeometry(platformScreen()->geometry());
             } else if (m_windowState & Qt::WindowMaximized) {
                 setGeometry(platformScreen()->availableGeometry());
@@ -258,11 +259,16 @@ void QAndroidPlatformWindow::updateSystemUiVisibility()
     if (!isNonRegularWindow) {
         if (m_windowState & Qt::WindowFullScreen)
             QtAndroid::setSystemUiVisibility(QtAndroid::SYSTEM_UI_VISIBILITY_FULLSCREEN);
-        else if (flags & Qt::MaximizeUsingFullscreenGeometryHint)
+        else if (flags & Qt::ExpandedClientAreaHint)
             QtAndroid::setSystemUiVisibility(QtAndroid::SYSTEM_UI_VISIBILITY_TRANSLUCENT);
         else
             QtAndroid::setSystemUiVisibility(QtAndroid::SYSTEM_UI_VISIBILITY_NORMAL);
     }
+}
+
+void QAndroidPlatformWindow::updateFocusedEditText()
+{
+    m_nativeQtWindow.callMethod<void>("updateFocusedEditText");
 }
 
 bool QAndroidPlatformWindow::isExposed() const
@@ -303,15 +309,17 @@ void QAndroidPlatformWindow::destroySurface()
 void QAndroidPlatformWindow::onSurfaceChanged(QtJniTypes::Surface surface)
 {
     lockSurface();
+    const bool surfaceIsValid = surface.isValid();
+    qCDebug(lcQpaWindow) << "onSurfaceChanged():, valid Surface received" << surfaceIsValid;
     m_androidSurfaceObject = surface;
-    if (m_androidSurfaceObject.isValid()) // wait until we have a valid surface to draw into
-         m_surfaceWaitCondition.wakeOne();
-    unlockSurface();
-
-    if (m_androidSurfaceObject.isValid()) {
-        // repaint the window, when we have a valid surface
-        sendExpose();
+    if (surfaceIsValid) {
+        // wait until we have a valid surface to draw into
+        m_surfaceWaitCondition.wakeOne();
+    } else {
+        clearSurface();
     }
+
+    unlockSurface();
 }
 
 void QAndroidPlatformWindow::sendExpose() const
@@ -351,6 +359,9 @@ void QAndroidPlatformWindow::setSurface(JNIEnv *env, jobject object, jint window
             continue;
         QAndroidPlatformWindow *platformWindow =
                                 static_cast<QAndroidPlatformWindow *>(window->handle());
+        const auto guard = platformWindow->destructionGuard();
+        if (!platformWindow->m_surfaceCreated)
+            continue;
         if (platformWindow->nativeViewId() == windowId)
             platformWindow->onSurfaceChanged(surface);
     }
@@ -369,6 +380,18 @@ void QAndroidPlatformWindow::windowFocusChanged(JNIEnv *env, jobject object,
         // Clear focus if current window has lost focus
         QWindowSystemInterface::handleFocusWindowChanged(nullptr);
     }
+}
+
+/*
+    Due to calls originating from Android, it is possible for native methods to
+    try to manipulate any given instance of QAndroidPlatformWindow when it is
+    already being destroyed. So we use this to guard against that. It is called
+    in the destructor, and should also be called in any function registered to
+    be called from java that may touch an instance of QAndroidPlatformWindow.
+ */
+QMutexLocker<QMutex> QAndroidPlatformWindow::destructionGuard()
+{
+    return QMutexLocker(&m_destructionMutex);
 }
 
 bool QAndroidPlatformWindow::registerNatives(QJniEnvironment &env)

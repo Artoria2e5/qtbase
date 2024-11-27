@@ -55,17 +55,12 @@ inline bool qIsFilenameBroken(const QFileSystemEntry &entry)
             Q_RETURN_ON_INVALID_FILENAME("Broken filename passed to function", (result)); \
     } while (false)
 
+Q_CORE_EXPORT bool qt_isCaseSensitive(const QFileSystemEntry &entry, QFileSystemMetaData &data);
+
 class Q_AUTOTEST_EXPORT QFileSystemEngine
 {
 public:
-    static bool isCaseSensitive()
-    {
-#ifndef Q_OS_WIN
-        return true;
-#else
-        return false;
-#endif
-    }
+    static bool isCaseSensitive(const QFileSystemEntry &entry, QFileSystemMetaData &data);
 
     static QFileSystemEntry getLinkTarget(const QFileSystemEntry &link, QFileSystemMetaData &data);
     static QFileSystemEntry getRawLinkPath(const QFileSystemEntry &link,
@@ -96,8 +91,7 @@ public:
     static QByteArray id(int fd);
     static bool setFileTime(int fd, const QDateTime &newDate,
                             QFile::FileTime whatTime, QSystemError &error);
-    static bool setPermissions(int fd, QFile::Permissions permissions, QSystemError &error,
-                               QFileSystemMetaData *data = nullptr);
+    static bool setPermissions(int fd, QFile::Permissions permissions, QSystemError &error);
 #endif
 #if defined(Q_OS_WIN)
     static QFileSystemEntry junctionTarget(const QFileSystemEntry &link, QFileSystemMetaData &data);
@@ -121,8 +115,27 @@ public:
     static QString tempPath();
 
     static bool createDirectory(const QFileSystemEntry &entry, bool createParents,
-                                std::optional<QFile::Permissions> permissions = std::nullopt);
-    static bool removeDirectory(const QFileSystemEntry &entry, bool removeEmptyParents);
+                                std::optional<QFile::Permissions> permissions = std::nullopt)
+    {
+        if (createParents)
+            return mkpath(entry, permissions);
+        return mkdir(entry, permissions);
+    }
+
+    static bool mkdir(const QFileSystemEntry &entry,
+                      std::optional<QFile::Permissions> permissions = std::nullopt);
+    static bool mkpath(const QFileSystemEntry &entry,
+                       std::optional<QFile::Permissions> permissions = std::nullopt);
+
+    static bool removeDirectory(const QFileSystemEntry &entry, bool removeEmptyParents)
+    {
+        if (removeEmptyParents)
+            return rmpath(entry);
+        return rmdir(entry);
+    }
+
+    static bool rmdir(const QFileSystemEntry &entry);
+    static bool rmpath(const QFileSystemEntry &entry);
 
     static bool createLink(const QFileSystemEntry &source, const QFileSystemEntry &target, QSystemError &error);
 
@@ -133,8 +146,8 @@ public:
     static bool renameOverwriteFile(const QFileSystemEntry &source, const QFileSystemEntry &target, QSystemError &error);
     static bool removeFile(const QFileSystemEntry &entry, QSystemError &error);
 
-    static bool setPermissions(const QFileSystemEntry &entry, QFile::Permissions permissions, QSystemError &error,
-                               QFileSystemMetaData *data = nullptr);
+    static bool setPermissions(const QFileSystemEntry &entry, QFile::Permissions permissions,
+                               QSystemError &error);
 
     // unused, therefore not implemented
     static bool setFileTime(const QFileSystemEntry &entry, const QDateTime &newDate,

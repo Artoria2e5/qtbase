@@ -42,15 +42,15 @@ def qtVersion(root = qtbase_root, pfx = 'set(QT_REPO_MODULE_VERSION '):
     raise Error(f'Failed to find {pfx}...) line in {root.joinpath(".cmake.conf")}')
 qtVersion = qtVersion()
 
-def unicode2hex(s):
-    lst = []
+def unicode2hex(s: str) -> list[str]:
+    lst: list[str] = []
     for x in s:
-        v = ord(x)
+        v: int = ord(x)
         if v > 0xFFFF:
             # make a surrogate pair
             # copied from qchar.h
-            high = (v >> 10) + 0xd7c0
-            low = (v % 0x400 + 0xdc00)
+            high: int = (v >> 10) + 0xd7c0
+            low: int = (v % 0x400 + 0xdc00)
             lst.append(hex(high))
             lst.append(hex(low))
         else:
@@ -64,7 +64,7 @@ def wrap_list(lst, perline=20):
             yield head
     return ",\n".join(", ".join(x) for x in split(lst, perline))
 
-def names_clash(cldr, enum):
+def names_clash(cldr: str, enum: str) -> None | str:
     """True if the reader might not recognize cldr as the name of enum
 
     First argument, cldr, is the name CLDR gives for some language,
@@ -115,7 +115,7 @@ def AtomicRenameTemporaryFile(originalLocation: Path, *, prefix: str, dir: Path)
         yield tempFile
         tempFile.close()
         # Move the modified file to the original location
-        Path(tempFile.name).rename(originalLocation)
+        Path(tempFile.name).replace(originalLocation)
     except Exception:
         # delete the temporary file in case of error
         tempFile.close()

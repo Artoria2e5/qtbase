@@ -8,6 +8,7 @@
 #include <semaphore.h>
 
 #include "androidcontentfileengine.h"
+#include "qandroidapkfileengine.h"
 #include "androiddeadlockprotector.h"
 #include "androidjniaccessibility.h"
 #include "androidjniinput.h"
@@ -83,6 +84,7 @@ static double m_density = 1.0;
 
 static AndroidAssetsFileEngineHandler *m_androidAssetsFileEngineHandler = nullptr;
 static AndroidContentFileEngineHandler *m_androidContentFileEngineHandler = nullptr;
+static QAndroidApkFileEngineHandler *m_androidApkFileEngineHandler = nullptr;
 
 static AndroidBackendRegister *m_backendRegister = nullptr;
 
@@ -384,6 +386,7 @@ static jboolean startQtAndroidPlugin(JNIEnv *env, jobject /*object*/, jstring pa
     m_androidPlatformIntegration = nullptr;
     m_androidAssetsFileEngineHandler = new AndroidAssetsFileEngineHandler();
     m_androidContentFileEngineHandler = new AndroidContentFileEngineHandler();
+    m_androidApkFileEngineHandler = new QAndroidApkFileEngineHandler();
     m_mainLibraryHnd = nullptr;
     m_backendRegister = new AndroidBackendRegister();
 
@@ -496,6 +499,8 @@ static void quitQtAndroidPlugin(JNIEnv *env, jclass /*clazz*/)
     m_androidAssetsFileEngineHandler = nullptr;
     delete m_androidContentFileEngineHandler;
     m_androidContentFileEngineHandler = nullptr;
+    delete m_androidApkFileEngineHandler;
+    m_androidApkFileEngineHandler = nullptr;
 }
 
 static void terminateQt(JNIEnv *env, jclass /*clazz*/)
@@ -533,6 +538,10 @@ static void terminateQt(JNIEnv *env, jclass /*clazz*/)
     m_androidPlatformIntegration = nullptr;
     delete m_androidAssetsFileEngineHandler;
     m_androidAssetsFileEngineHandler = nullptr;
+    delete m_androidContentFileEngineHandler;
+    m_androidContentFileEngineHandler = nullptr;
+    delete m_androidApkFileEngineHandler;
+    m_androidApkFileEngineHandler = nullptr;
     delete m_backendRegister;
     m_backendRegister = nullptr;
     sem_post(&m_exitSemaphore);
@@ -629,6 +638,12 @@ static void updateApplicationState(JNIEnv */*env*/, jobject /*thiz*/, jint state
         QWindowSystemInterface::handleApplicationStateChanged(Qt::ApplicationState(state));
         QAndroidEventDispatcherStopper::instance()->goingToStop(false);
     }
+}
+
+static void updateLocale(JNIEnv */*env*/, jobject /*thiz*/)
+{
+    QCoreApplication::postEvent(QCoreApplication::instance(), new QEvent(QEvent::LocaleChange));
+    QCoreApplication::postEvent(QCoreApplication::instance(), new QEvent(QEvent::LanguageChange));
 }
 
 static void handleOrientationChanged(JNIEnv */*env*/, jobject /*thiz*/, jint newRotation, jint nativeOrientation)
@@ -734,7 +749,8 @@ static JNINativeMethod methods[] = {
     { "updateApplicationState", "(I)V", (void *)updateApplicationState },
     { "onActivityResult", "(IILandroid/content/Intent;)V", (void *)onActivityResult },
     { "onNewIntent", "(Landroid/content/Intent;)V", (void *)onNewIntent },
-    { "onBind", "(Landroid/content/Intent;)Landroid/os/IBinder;", (void *)onBind }
+    { "onBind", "(Landroid/content/Intent;)Landroid/os/IBinder;", (void *)onBind },
+    { "updateLocale", "()V", (void *)updateLocale },
 };
 
 #define FIND_AND_CHECK_CLASS(CLASS_NAME) \

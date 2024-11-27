@@ -424,9 +424,7 @@ void QNativeIpcKey::destroy_internal() noexcept
 
 /*!
     \fn QNativeIpcKey::swap(QNativeIpcKey &other) noexcept
-
-    Swaps the native IPC key and type \a other with this object.
-    This operation is very fast and never fails.
+    \memberswap{native IPC key and type}
 */
 
 /*!
@@ -497,12 +495,6 @@ void QNativeIpcKey::setNativeKey_internal(const QString &)
 {
     d->legacyKey_.clear();
 }
-
-/*!
-    \fn size_t QNativeIpcKey::qHash(const QNativeIpcKey &ipcKey) noexcept
-
-    Returns the hash value for \a ipcKey, using a default seed of \c 0.
-*/
 
 /*!
     \fn size_t QNativeIpcKey::qHash(const QNativeIpcKey &ipcKey, size_t seed) noexcept

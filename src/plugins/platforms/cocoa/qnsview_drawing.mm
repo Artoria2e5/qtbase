@@ -147,7 +147,15 @@
 
     // Ideally we would plumb this situation through QPA in a way that lets
     // clients invalidate their own caches, recreate QBackingStore, etc.
-    // For now we trigger an expose, and let QCocoaBackingStore deal with
+
+    // QPA supports DPR (scale) change notifications. We are not sure
+    // based on this event that it is the scale that has changed (it
+    // could be the color space), however QPA will determine if it has
+    // actually changed.
+    QWindowSystemInterface::handleWindowDevicePixelRatioChanged
+        <QWindowSystemInterface::SynchronousDelivery>(m_platformWindow->window());
+
+    // Trigger an expose, and let QCocoaBackingStore deal with
     // buffer invalidation internally.
     [self setNeedsDisplay:YES];
 }
@@ -237,11 +245,22 @@
 
         handleExposeEvent();
 
-        // If the expose event resulted in a secondary thread requesting that its
-        // drawable should be presented on the main thread with transaction, do so.
-        if (auto mainThreadPresentation = qtMetalLayer.mainThreadPresentation) {
-            mainThreadPresentation();
-            qtMetalLayer.mainThreadPresentation = nil;
+        {
+            // Clearing the mainThreadPresentation below will auto-release the
+            // block held by the property, which in turn holds on to drawables,
+            // so we want to clean up as soon as possible, to prevent stalling
+            // when requesting new drawables. But merely referencing the block
+            // below for the nil-check will make another auto-released copy of
+            // the block, so the scope of the auto-release pool needs to include
+            // that check as well.
+            QMacAutoReleasePool pool;
+
+            // If the expose event resulted in a secondary thread requesting that its
+            // drawable should be presented on the main thread with transaction, do so.
+            if (auto mainThreadPresentation = qtMetalLayer.mainThreadPresentation) {
+                mainThreadPresentation();
+                qtMetalLayer.mainThreadPresentation = nil;
+            }
         }
 
         qtMetalLayer.presentsWithTransaction = presentedWithTransaction;

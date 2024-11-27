@@ -22,7 +22,9 @@ using namespace Qt::StringLiterals;
 // Create default time zone using appropriate backend
 static QTimeZonePrivate *newBackendTimeZone()
 {
-#if defined(Q_OS_DARWIN)
+#if QT_CONFIG(timezone_tzdb)
+    return new QChronoTimeZonePrivate();
+#elif defined(Q_OS_DARWIN)
     return new QMacTimeZonePrivate();
 #elif defined(Q_OS_ANDROID)
     return new QAndroidTimeZonePrivate();
@@ -41,7 +43,9 @@ static QTimeZonePrivate *newBackendTimeZone()
 static QTimeZonePrivate *newBackendTimeZone(const QByteArray &ianaId)
 {
     Q_ASSERT(!ianaId.isEmpty());
-#if defined(Q_OS_DARWIN)
+#if QT_CONFIG(timezone_tzdb)
+    return new QChronoTimeZonePrivate(ianaId);
+#elif defined(Q_OS_DARWIN)
     return new QMacTimeZonePrivate(ianaId);
 #elif defined(Q_OS_ANDROID)
     return new QAndroidTimeZonePrivate(ianaId);
@@ -67,6 +71,7 @@ public:
     // the host resources are insufficient. A simple UTC backend is used if no
     // alternative is available.
     QExplicitlySharedDataPointer<QTimeZonePrivate> backend;
+    // TODO QTBUG-56899: refresh should update this backend.
 };
 
 Q_GLOBAL_STATIC(QTimeZoneSingleton, global_tz);
@@ -708,9 +713,7 @@ QTimeZone::~QTimeZone()
 
 /*!
     \fn QTimeZone::swap(QTimeZone &other) noexcept
-
-    Swaps this time zone instance with \a other. This function is very
-    fast and never fails.
+    \memberswap{time zone instance}
 */
 
 /*!
@@ -928,12 +931,19 @@ QString QTimeZone::comment() const
     The name returned is the one for the given \a locale, applicable at the
     given \a atDateTime, and of the form indicated by \a nameType. The display
     name may change depending on DST or historical events.
+//! [display-name-caveats]
+    If no suitably localized name of the given type is available, another name
+    type may be used, or an empty string may be returned.
 
     If the \a locale is not provided, then the application default locale will
     be used. For custom timezones created by client code, the data supplied to
     the constructor are used, as no localization data will be available for it.
+    If this timezone is invalid, an empty string is returned. This may also
+    arise for the representation of local time if determining the system time
+    zone fails.
 
     This method is only available when feature \c timezone is enabled.
+//! [display-name-caveats]
 
     \sa abbreviation()
 */
@@ -967,12 +977,7 @@ QString QTimeZone::displayName(const QDateTime &atDateTime, NameType nameType,
     given \a timeType is in effect and of the form indicated by \a nameType.
     Where the time zone display names have changed over time, the current names
     will be used.
-
-    If the \a locale is not provided, then the application default locale will
-    be used. For custom timezones created by client code, the data supplied to
-    the constructor are used, as no localization data will be available for it.
-
-    This method is only available when feature \c timezone is enabled.
+    \include qtimezone.cpp display-name-caveats
 
     \sa abbreviation()
 */
@@ -1399,7 +1404,7 @@ QByteArray QTimeZone::systemTimeZoneId()
     if (!sys.isEmpty())
         return sys;
     // The system zone, despite the empty ID, may know its real ID anyway:
-    return systemTimeZone().id();
+    return global_tz->backend->id();
 }
 
 /*!
@@ -1422,9 +1427,9 @@ QByteArray QTimeZone::systemTimeZoneId()
 */
 QTimeZone QTimeZone::systemTimeZone()
 {
-    // Use ID even if empty, as default constructor is invalid but empty-ID
-    // constructor goes to backend's default constructor, which may succeed.
-    const auto sys = QTimeZone(global_tz->backend->systemTimeZoneId());
+    // Short-cut constructor's handling of empty ID:
+    const QByteArray sysId = global_tz->backend->systemTimeZoneId();
+    const auto sys = sysId.isEmpty() ? QTimeZone(global_tz->backend) : QTimeZone(sysId);
     if (!sys.isValid()) {
         static bool neverWarned = true;
         if (neverWarned) {
@@ -1481,8 +1486,18 @@ bool QTimeZone::isTimeZoneIdAvailable(const QByteArray &ianaId)
         || global_tz->backend->isTimeZoneIdAvailable(ianaId);
 }
 
+[[maybe_unused]] static bool isUniqueSorted(const QList<QByteArray> &seq)
+{
+    // Since [..., b, a, ...] isn't unique-sorted if a <= b, at least the
+    // suggested implementations of is_sorted() and is_sorted_until() imply a
+    // non-unique sorted list will fail is_sorted() with <= comparison.
+    return std::is_sorted(seq.begin(), seq.end(), std::less_equal<QByteArray>());
+}
+
 static QList<QByteArray> set_union(const QList<QByteArray> &l1, const QList<QByteArray> &l2)
 {
+    Q_ASSERT(isUniqueSorted(l1));
+    Q_ASSERT(isUniqueSorted(l2));
     QList<QByteArray> result;
     result.reserve(l1.size() + l2.size());
     std::set_union(l1.begin(), l1.end(),
@@ -1505,6 +1520,8 @@ static QList<QByteArray> set_union(const QList<QByteArray> &l1, const QList<QByt
 
 QList<QByteArray> QTimeZone::availableTimeZoneIds()
 {
+    // Backends MUST implement availableTimeZoneIds().
+    // The return from each backend MUST be sorted and unique.
     return set_union(QUtcTimeZonePrivate().availableTimeZoneIds(),
                      global_tz->backend->availableTimeZoneIds());
 }

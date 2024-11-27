@@ -1085,8 +1085,10 @@ void tst_QGraphicsWidget::initStyleOption()
     }
     QFETCH(bool, underMouse);
     if (underMouse) {
-        QCursor::setPos(view.viewport()->mapToGlobal(view.mapFromScene(widget->mapToScene(widget->boundingRect().center()))));
-        QTest::qWait(100);
+        const auto pos = view.viewport()->mapToGlobal(view.mapFromScene(widget->mapToScene(widget->boundingRect().center())));
+        QCursor::setPos(pos);
+        if (!QTest::qWaitFor([pos]{ return QCursor::pos() == pos; }))
+            QSKIP("Cannot move cursor");
     }
 
     QFETCH(QPalette, palette);
@@ -1459,7 +1461,7 @@ void tst_QGraphicsWidget::setTabOrderAndReparent()
     QGraphicsScene scene;
     QGraphicsView view(&scene);
     view.show();
-    QVERIFY(QTest::qWaitForWindowActive(&view));
+    QVERIFY(QTest::qWaitForWindowFocused(&view));
     QCOMPARE(QApplication::activeWindow(), (QWidget*)&view);
 
     QGraphicsWidget *w[4];
@@ -1588,7 +1590,7 @@ void tst_QGraphicsWidget::verifyFocusChain()
     QGraphicsScene scene;
     QGraphicsView view(&scene);
     view.show();
-    QVERIFY(QTest::qWaitForWindowActive(&view));
+    QVERIFY(QTest::qWaitForWindowFocused(&view));
 
     {
         // parent/child focus

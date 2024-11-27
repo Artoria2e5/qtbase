@@ -268,7 +268,7 @@ void QIOSWindow::setWindowState(Qt::WindowStates state)
             QRect maximizedGeometry = fullscreenGeometry;
 
 #if !defined(Q_OS_VISIONOS)
-            if (!(window()->flags() & Qt::MaximizeUsingFullscreenGeometryHint)) {
+            if (!(window()->flags() & Qt::ExpandedClientAreaHint)) {
                 // If the safe area margins reflect the screen's outer edges,
                 // then reduce the maximized geometry accordingly. Otherwise
                 // leave it as is, and assume the client will take the safe
@@ -282,10 +282,20 @@ void QIOSWindow::setWindowState(Qt::WindowStates state)
             }
 #endif
 
+            if (m_view.window) {
+                // On application startup, during main(), we don't have a UIWindow yet (because
+                // the UIWindowScene has not been connected yet), but once the scene has been
+                // connected and we have a UIWindow we can adjust the maximized/fullscreen size
+                // to account for split-view or floating window mode, where the UIWindow is
+                // smaller than the screen.
+                fullscreenGeometry = fullscreenGeometry.intersected(uiWindowBounds);
+                maximizedGeometry = maximizedGeometry.intersected(uiWindowBounds);
+            }
+
             if (state & Qt::WindowFullScreen)
-                applyGeometry(fullscreenGeometry.intersected(uiWindowBounds));
+                applyGeometry(fullscreenGeometry);
             else
-                applyGeometry(maximizedGeometry.intersected(uiWindowBounds));
+                applyGeometry(maximizedGeometry);
         }
     } else {
         applyGeometry(m_normalGeometry);

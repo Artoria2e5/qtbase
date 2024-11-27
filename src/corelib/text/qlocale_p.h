@@ -48,7 +48,7 @@ template <typename MaskType, uchar Lowest> struct QCharacterSetMatch
     static constexpr int MaxRange = std::numeric_limits<MaskType>::digits;
     MaskType mask;
 
-    constexpr QCharacterSetMatch(std::string_view set)
+    constexpr QCharacterSetMatch(std::string_view set) noexcept
         : mask(0)
     {
         for (char c : set) {
@@ -57,7 +57,7 @@ template <typename MaskType, uchar Lowest> struct QCharacterSetMatch
         }
     }
 
-    constexpr bool matches(uchar c) const
+    constexpr bool matches(uchar c) const noexcept
     {
         unsigned idx = c - Lowest;
         if (idx >= MaxRange)
@@ -76,7 +76,7 @@ inline constexpr char ascii_space_chars[] =
         " ";    // 32: space
 
 template <const char *Set, int ForcedLowest = -1>
-inline constexpr auto makeCharacterSetMatch()
+inline constexpr auto makeCharacterSetMatch() noexcept
 {
     constexpr auto view = std::string_view(Set);
     constexpr uchar MinElement = *std::min_element(view.begin(), view.end());
@@ -188,35 +188,35 @@ namespace QIcu {
 
 struct QLocaleId
 {
-    [[nodiscard]] Q_AUTOTEST_EXPORT static QLocaleId fromName(QStringView name);
-    [[nodiscard]] inline bool operator==(QLocaleId other) const
+    [[nodiscard]] Q_AUTOTEST_EXPORT static QLocaleId fromName(QStringView name) noexcept;
+    [[nodiscard]] inline bool operator==(QLocaleId other) const noexcept
     { return language_id == other.language_id && script_id == other.script_id && territory_id == other.territory_id; }
-    [[nodiscard]] inline bool operator!=(QLocaleId other) const
+    [[nodiscard]] inline bool operator!=(QLocaleId other) const noexcept
     { return !operator==(other); }
-    [[nodiscard]] inline bool isValid() const
+    [[nodiscard]] inline bool isValid() const noexcept
     {
         return language_id <= QLocale::LastLanguage && script_id <= QLocale::LastScript
                 && territory_id <= QLocale::LastTerritory;
     }
-    [[nodiscard]] inline bool matchesAll() const
+    [[nodiscard]] inline bool matchesAll() const noexcept
     {
         return !language_id && !script_id && !territory_id;
     }
     // Use as: filter.accept...(candidate)
-    [[nodiscard]] inline bool acceptLanguage(quint16 lang) const
+    [[nodiscard]] inline bool acceptLanguage(quint16 lang) const noexcept
     {
         // Always reject AnyLanguage (only used for last entry in locale_data array).
         // So, when searching for AnyLanguage, accept everything *but* AnyLanguage.
         return language_id ? lang == language_id : lang;
     }
-    [[nodiscard]] inline bool acceptScriptTerritory(QLocaleId other) const
+    [[nodiscard]] inline bool acceptScriptTerritory(QLocaleId other) const noexcept
     {
         return (!territory_id || other.territory_id == territory_id)
                 && (!script_id || other.script_id == script_id);
     }
 
-    [[nodiscard]] QLocaleId withLikelySubtagsAdded() const;
-    [[nodiscard]] QLocaleId withLikelySubtagsRemoved() const;
+    [[nodiscard]] QLocaleId withLikelySubtagsAdded() const noexcept;
+    [[nodiscard]] QLocaleId withLikelySubtagsRemoved() const noexcept;
 
     [[nodiscard]] QByteArray name(char separator = '-') const;
 
@@ -244,8 +244,10 @@ struct QLocaleData
 public:
     // Having an index for each locale enables us to have diverse sources of
     // data, e.g. calendar locales, as well as the main CLDR-derived data.
-    [[nodiscard]] static qsizetype findLocaleIndex(QLocaleId localeId);
-    [[nodiscard]] static const QLocaleData *c();
+    [[nodiscard]] static qsizetype findLocaleIndex(QLocaleId localeId) noexcept;
+    [[nodiscard]] static const QLocaleData *c() noexcept;
+    [[nodiscard]] Q_AUTOTEST_EXPORT
+    static bool allLocaleDataRows(bool (*check)(qsizetype, const QLocaleData &));
 
     enum DoubleForm {
         DFExponent = 0,
@@ -564,10 +566,11 @@ inline QLocalePrivate *QSharedDataPointer<QLocalePrivate>::clone()
 // point after it (so not [[nodiscard]]):
 QString qt_readEscapedFormatString(QStringView format, qsizetype *idx);
 [[nodiscard]] bool qt_splitLocaleName(QStringView name, QStringView *lang = nullptr,
-                                      QStringView *script = nullptr, QStringView *cntry = nullptr);
-[[nodiscard]] qsizetype qt_repeatCount(QStringView s);
+                                      QStringView *script = nullptr,
+                                      QStringView *cntry = nullptr) noexcept;
+[[nodiscard]] qsizetype qt_repeatCount(QStringView s) noexcept;
 
-[[nodiscard]] constexpr inline bool ascii_isspace(uchar c)
+[[nodiscard]] constexpr inline bool ascii_isspace(uchar c) noexcept
 {
     constexpr auto matcher = QtPrivate::makeCharacterSetMatch<QtPrivate::ascii_space_chars>();
     return matcher.matches(c);

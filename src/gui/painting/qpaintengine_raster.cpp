@@ -2221,21 +2221,11 @@ void QRasterPaintEngine::drawImage(const QRectF &r, const QImage &img, const QRe
 
         // Do whatever fillRect() does, but without premultiplying the color if it's already premultiplied.
         QRgb color = img.pixel(sr_l, sr_t);
-        switch (img.format()) {
-        case QImage::Format_ARGB32_Premultiplied:
-        case QImage::Format_ARGB8565_Premultiplied:
-        case QImage::Format_ARGB6666_Premultiplied:
-        case QImage::Format_ARGB8555_Premultiplied:
-        case QImage::Format_ARGB4444_Premultiplied:
-        case QImage::Format_RGBA8888_Premultiplied:
-        case QImage::Format_A2BGR30_Premultiplied:
-        case QImage::Format_A2RGB30_Premultiplied:
+        if (img.pixelFormat().premultiplied() == QPixelFormat::Premultiplied) {
             // Combine premultiplied color with the opacity set on the painter.
             d->solid_color_filler.solidColor = multiplyAlpha256(QRgba64::fromArgb32(color), s->intOpacity);
-            break;
-        default:
+        } else {
             d->solid_color_filler.solidColor = qPremultiply(combineAlpha256(QRgba64::fromArgb32(color), s->intOpacity));
-            break;
         }
 
         if (d->solid_color_filler.solidColor.alphaF() <= 0.0f && s->composition_mode == QPainter::CompositionMode_SourceOver)
@@ -3369,6 +3359,9 @@ bool QRasterPaintEngine::shouldDrawCachedGlyphs(QFontEngine *fontEngine, const Q
     // to fill up our cache in that case.
     if (!fontEngine->hasInternalCaching() && !fontEngine->supportsTransformation(m))
         return false;
+
+    if (fontEngine->supportsTransformation(m) && !fontEngine->isSmoothlyScalable)
+        return true;
 
     return QPaintEngineEx::shouldDrawCachedGlyphs(fontEngine, m);
 }

@@ -14,6 +14,9 @@
 
 QT_BEGIN_NAMESPACE
 
+QEventLoopPrivate::~QEventLoopPrivate()
+    = default;
+
 /*!
     \class QEventLoop
     \inmodule QtCore
@@ -64,10 +67,11 @@ QEventLoop::QEventLoop(QObject *parent)
     : QObject(*new QEventLoopPrivate, parent)
 {
     Q_D(QEventLoop);
-    if (!QCoreApplication::instance() && QCoreApplicationPrivate::threadRequiresCoreApplication()) {
-        qWarning("QEventLoop: Cannot be used without QApplication");
+    QThreadData *threadData = d->threadData.loadRelaxed();
+    if (!QCoreApplication::instance() && threadData->requiresCoreApplication) {
+        qWarning("QEventLoop: Cannot be used without QCoreApplication");
     } else {
-        d->threadData.loadRelaxed()->ensureEventDispatcher();
+        threadData->ensureEventDispatcher();
     }
 }
 

@@ -308,7 +308,7 @@ qt_feature("localserver" PUBLIC
     SECTION "Networking"
     LABEL "QLocalServer"
     PURPOSE "Provides a local socket based server."
-    CONDITION QT_FEATURE_temporaryfile
+    CONDITION QT_FEATURE_temporaryfile AND NOT VXWORKS
 )
 qt_feature_definition("localserver" "QT_NO_LOCALSERVER" NEGATE VALUE "1")
 qt_feature("dnslookup" PUBLIC
@@ -353,7 +353,7 @@ qt_feature("publicsuffix-qt" PRIVATE
 qt_feature("publicsuffix-system" PRIVATE
     LABEL "  System publicsuffix database"
     CONDITION QT_FEATURE_topleveldomain
-    AUTODETECT LINUX
+    AUTODETECT LINUX OR HURD
     ENABLE INPUT_publicsuffix STREQUAL "system" OR INPUT_publicsuffix STREQUAL "all"
     DISABLE INPUT_publicsuffix STREQUAL "qt"
 )

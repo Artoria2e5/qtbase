@@ -1858,7 +1858,7 @@ void tst_QAbstractItemView::QTBUG31411_noSelection()
     moveCursorAway(&window);
 
     window.show();
-    QVERIFY(QTest::qWaitForWindowActive(&window));
+    QVERIFY(QTest::qWaitForWindowFocused(&window));
 
     qRegisterMetaType<QItemSelection>();
     QSignalSpy selectionChangeSpy(table->selectionModel(), &QItemSelectionModel::selectionChanged);
@@ -3556,7 +3556,7 @@ void tst_QAbstractItemView::focusNextOnHide()
     widget.show();
     QVERIFY(QTest::qWaitForWindowExposed(&widget));
 
-    QVERIFY(table.hasFocus());
+    QTRY_VERIFY(table.hasFocus());
     QCOMPARE(table.currentIndex(), table.model()->index(0, 0));
     QTest::keyPress(&table, Qt::Key_Tab);
     QCOMPARE(table.currentIndex(), table.model()->index(0, 1));

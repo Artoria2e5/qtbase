@@ -162,7 +162,12 @@ Type Moc::parseType()
     }
 
     skipCxxAttributes();
-    test(ENUM) || test(CLASS) || test(STRUCT);
+    if (test(ENUM))
+        type.typeTag = TypeTag::HasEnum;
+    if (test(CLASS))
+        type.typeTag |= TypeTag::HasClass;
+    if (test(STRUCT))
+        type.typeTag |= TypeTag::HasStruct;
     for(;;) {
         skipCxxAttributes();
         switch (next()) {
@@ -884,6 +889,7 @@ void Moc::parse()
                     if (test(Q_SIGNALS_TOKEN))
                         error("Signals cannot have access specifier");
                     break;
+                case STRUCT:
                 case CLASS: {
                     ClassDef nestedDef;
                     if (parseClassHead(&nestedDef)) {
@@ -1325,9 +1331,11 @@ void Moc::createPropertyDef(PropertyDef &propDef, int propertyIndex, Moc::Proper
     propDef.location = index;
     propDef.relativeIndex = propertyIndex;
 
-    QByteArray type = parseType().name;
+    Type t = parseType();
+    QByteArray type = t.name;
     if (type.isEmpty())
         error();
+    propDef.typeTag = t.typeTag;
     propDef.designable = propDef.scriptable = propDef.stored = "true";
     propDef.user = "false";
     /*
@@ -1341,8 +1349,6 @@ void Moc::createPropertyDef(PropertyDef &propDef, int propertyIndex, Moc::Proper
     type = normalizeType(type);
     if (type == "QMap")
         type = "QMap<QString,QVariant>";
-    else if (type == "QValueList")
-        type = "QValueList<QVariant>";
     else if (type == "LongLong")
         type = "qlonglong";
     else if (type == "ULongLong")
@@ -2100,6 +2106,8 @@ QJsonObject FunctionDef::toJson(int index) const
     if (!tag.isEmpty())
         fdef["tag"_L1] = QString::fromUtf8(tag);
     fdef["returnType"_L1] = QString::fromUtf8(normalizedType);
+    if (isConst)
+        fdef["isConst"_L1] = true;
 
     QJsonArray args;
     for (const ArgumentDef &arg: arguments)

@@ -92,15 +92,12 @@ QT_BEGIN_NAMESPACE
 
     \section1 Alternatives to QChronoTimer
 
-    An alternative to using QChronoTimer is to call QObject::startTimer()
-    for your object and reimplement the QObject::timerEvent() event handler
-    in your class (which must be a sub-class of QObject). The disadvantage
-    is that timerEvent() does not support such high-level features as
-    single-shot timers or signals.
+    QChronoTimer provides nanosecond resolution and a ±292 years range
+    (less chances of integer overflow if the interval is longer than \c
+    std::numeric_limits<int>::max()). If you only need millisecond resolution
+    and ±24 days range, you can continue to use the classical QTimer class
 
-    Another alternative is QBasicTimer. It is typically less cumbersome
-    than using QObject::startTimer() directly. See \l{Timers} for an
-    overview of all three approaches.
+    \include timers-common.qdocinc q-chrono-timer-alternatives
 
     Some operating systems limit the number of timers that may be used;
     Qt does its best to work around these limitations.

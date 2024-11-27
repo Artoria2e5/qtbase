@@ -749,11 +749,7 @@ const char16_t *QtPrivate::qustrchr(QStringView str, char16_t c) noexcept
                                    [=](qsizetype i) { return n + i; });
 #  endif
 #elif defined(__ARM_NEON__)
-#ifdef _MSC_VER
-    const uint16x8_t vmask = { 0x0008000400020001ULL, 0x0080004000200010ULL };
-#else
-    const uint16x8_t vmask = { 1, 1 << 1, 1 << 2, 1 << 3, 1 << 4, 1 << 5, 1 << 6, 1 << 7 };
-#endif
+    const uint16x8_t vmask = qvsetq_n_u16(1, 1 << 1, 1 << 2, 1 << 3, 1 << 4, 1 << 5, 1 << 6, 1 << 7);
     const uint16x8_t ch_vec = vdupq_n_u16(c);
     for (const char16_t *next = n + 8; next <= e; n = next, next += 8) {
         uint16x8_t data = vld1q_u16(reinterpret_cast<const uint16_t *>(n));
@@ -1294,11 +1290,7 @@ static int ucstrncmp(const char16_t *a, const char16_t *b, size_t l)
 #  elif defined(__ARM_NEON__)
     if (l >= 8) {
         const char16_t *end = a + l;
-#ifdef _MSC_VER
-        const uint16x8_t mask = { 0x0008000400020001ULL, 0x0080004000200010ULL };
-#else
-        const uint16x8_t mask = { 1, 1 << 1, 1 << 2, 1 << 3, 1 << 4, 1 << 5, 1 << 6, 1 << 7 };
-#endif
+        const uint16x8_t mask = qvsetq_n_u16( 1, 1 << 1, 1 << 2, 1 << 3, 1 << 4, 1 << 5, 1 << 6, 1 << 7 );
         while (end - a > 7) {
             uint16x8_t da = vld1q_u16(reinterpret_cast<const uint16_t *>(a));
             uint16x8_t db = vld1q_u16(reinterpret_cast<const uint16_t *>(b));
@@ -2410,9 +2402,10 @@ encoded in \1, and is converted to QString using the \2 function.
 /*! \fn QString QString::fromWCharArray(const wchar_t *string, qsizetype size)
     \since 4.2
 
-    Returns a copy of the \a string, where the encoding of \a string depends on
-    the size of wchar. If wchar is 4 bytes, the \a string is interpreted as
-    UCS-4, if wchar is 2 bytes it is interpreted as UTF-16.
+    Reads the first \a size code units of the \c wchar_t array to whose start
+    \a string points, converting them to Unicode and returning the result as
+    a QString. The encoding used by \c wchar_t is assumed to be UCS-4 if the
+    type's size is four bytes or UTF-16 if its size is two bytes.
 
     If \a size is -1 (default), the \a string must be '\\0'-terminated.
 
@@ -2604,9 +2597,7 @@ QString::QString(QChar ch)
 
 /*! \fn void QString::swap(QString &other)
     \since 4.8
-
-    Swaps string \a other with this string. This operation is very fast and
-    never fails.
+    \memberswap{string}
 */
 
 /*! \fn void QString::detach()
@@ -5436,7 +5427,7 @@ QString QString::sliced_helper(QString &str, qsizetype pos, qsizetype n)
     \note The behavior is undefined if \a pos < 0, \a n < 0,
     or \a pos + \a n > size().
 
-    \snippet qstring/main.cpp 86
+    \snippet qstring/main.cpp 97
 
     \sa sliced(), first(), last(), chopped(), chop(), truncate()
 */
@@ -5706,6 +5697,26 @@ QByteArray QString::toLatin1_helper_inplace(QString &s)
     Q_ASSERT(s.constData() == QString().constData());
 
     return QByteArray(std::move(ba_d));
+}
+
+/*!
+    \since 6.9
+    \internal
+    \relates QLatin1StringView
+
+    Returns a UTF-8 representation of \a string as a QByteArray.
+*/
+QByteArray QtPrivate::convertToUtf8(QLatin1StringView string)
+{
+    if (Q_UNLIKELY(string.isNull()))
+        return QByteArray();
+
+    // create a QByteArray with the worst case scenario size
+    QByteArray ba(string.size() * 2, Qt::Uninitialized);
+    const qsizetype sz = QUtf8::convertFromLatin1(ba.data(), string) - ba.data();
+    ba.truncate(sz);
+
+    return ba;
 }
 
 // QLatin1 methods that use helpers from qstring.cpp
@@ -9199,7 +9210,7 @@ typedef QVarLengthArray<Part, ExpectedParts> ParseResult;
 typedef QVarLengthArray<int, ExpectedParts/2> ArgIndexToPlaceholderMap;
 
 template <typename StringView>
-static ParseResult parseMultiArgFormatString(StringView s)
+static ParseResult parseMultiArgFormatString_impl(StringView s)
 {
     ParseResult result;
 
@@ -9228,6 +9239,11 @@ static ParseResult parseMultiArgFormatString(StringView s)
         result.push_back(Part{s.sliced(last, len - last)}); // trailing literal text
 
     return result;
+}
+
+static ParseResult parseMultiArgFormatString(QAnyStringView s)
+{
+    return s.visit([] (auto s) { return parseMultiArgFormatString_impl(s); });
 }
 
 static ArgIndexToPlaceholderMap makeArgIndexToPlaceholderMap(const ParseResult &parts)
@@ -9275,8 +9291,7 @@ static qsizetype resolveStringRefsAndReturnTotalSize(ParseResult &parts, const A
 
 } // unnamed namespace
 
-template <typename StringView>
-static QString argToQStringImpl(StringView pattern, size_t numArgs, const QtPrivate::ArgBase **args)
+QString QtPrivate::argToQString(QAnyStringView pattern, size_t numArgs, const ArgBase **args)
 {
     // Step 1-2 above
     ParseResult parts = parseMultiArgFormatString(pattern);
@@ -9326,16 +9341,6 @@ static QString argToQStringImpl(StringView pattern, size_t numArgs, const QtPriv
     result.truncate(out - result.cbegin());
 
     return result;
-}
-
-QString QtPrivate::argToQString(QStringView pattern, size_t n, const ArgBase **args)
-{
-    return argToQStringImpl(pattern, n, args);
-}
-
-QString QtPrivate::argToQString(QLatin1StringView pattern, size_t n, const ArgBase **args)
-{
-    return argToQStringImpl(pattern, n, args);
 }
 
 /*! \fn bool QString::isRightToLeft() const

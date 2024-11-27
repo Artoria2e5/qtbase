@@ -166,6 +166,18 @@ QT_BEGIN_NAMESPACE
 #define GL_R8UI                           0x8232
 #endif
 
+#ifndef GL_R32UI
+#define GL_R32UI                          0x8236
+#endif
+
+#ifndef GL_RG32UI
+#define GL_RG32UI                         0x823C
+#endif
+
+#ifndef GL_RGBA32UI
+#define GL_RGBA32UI                       0x8D70
+#endif
+
 #ifndef GL_RG8
 #define GL_RG8                            0x822B
 #endif
@@ -900,6 +912,12 @@ bool QRhiGles2::create(QRhi::Flags flags)
     caps.bgraExternalFormat = f->hasOpenGLExtension(QOpenGLExtensions::BGRATextureFormat);
     caps.bgraInternalFormat = caps.bgraExternalFormat && caps.gles;
     caps.r8Format = f->hasOpenGLFeature(QOpenGLFunctions::TextureRGFormats);
+
+    if (caps.gles)
+        caps.r32uiFormat = (caps.ctxMajor > 3 || (caps.ctxMajor == 3 && caps.ctxMinor >= 1)) && caps.r8Format; // ES 3.1
+    else
+        caps.r32uiFormat = true;
+
     caps.r16Format = f->hasOpenGLExtension(QOpenGLExtensions::Sized16Formats);
     caps.floatFormats = caps.ctxMajor >= 3; // 3.0 or ES 3.0
     caps.rgb10Formats = caps.ctxMajor >= 3; // 3.0 or ES 3.0
@@ -1103,6 +1121,8 @@ bool QRhiGles2::create(QRhi::Flags flags)
         if (caps.glesMultisampleRenderToTexture) {
             glFramebufferTexture2DMultisampleEXT = reinterpret_cast<void(QOPENGLF_APIENTRYP)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei)>(
                 ctx->getProcAddress(QByteArrayLiteral("glFramebufferTexture2DMultisampleEXT")));
+            glRenderbufferStorageMultisampleEXT = reinterpret_cast<void(QOPENGLF_APIENTRYP)(GLenum, GLsizei, GLenum, GLsizei, GLsizei)>(
+                ctx->getProcAddress(QByteArrayLiteral("glRenderbufferStorageMultisampleEXT")));
         }
         caps.glesMultiviewMultisampleRenderToTexture = ctx->hasExtension("GL_OVR_multiview_multisampled_render_to_texture");
         if (caps.glesMultiviewMultisampleRenderToTexture) {
@@ -1115,6 +1135,11 @@ bool QRhiGles2::create(QRhi::Flags flags)
     }
 
     caps.unpackRowLength = !caps.gles || caps.ctxMajor >= 3;
+
+    if (caps.gles)
+        caps.perRenderTargetBlending = caps.ctxMajor > 3 || (caps.ctxMajor == 3 && caps.ctxMinor >= 2);
+    else
+        caps.perRenderTargetBlending = caps.ctxMajor >= 4;
 
     nativeHandlesStruct.context = ctx;
 
@@ -1320,6 +1345,24 @@ static inline void toGlTextureFormat(QRhiTexture::Format format, const QRhiGles2
         *glformat = GL_RGBA;
         *gltype = GL_UNSIGNED_INT_2_10_10_10_REV;
         break;
+    case QRhiTexture::R32UI:
+        *glintformat = GL_R32UI;
+        *glsizedintformat = *glintformat;
+        *glformat = GL_RGBA;
+        *gltype = GL_UNSIGNED_INT;
+        break;
+    case QRhiTexture::RG32UI:
+        *glintformat = GL_RG32UI;
+        *glsizedintformat = *glintformat;
+        *glformat = GL_RGBA;
+        *gltype = GL_UNSIGNED_INT;
+        break;
+    case QRhiTexture::RGBA32UI:
+        *glintformat = GL_RGBA32UI;
+        *glsizedintformat = *glintformat;
+        *glformat = GL_RGBA;
+        *gltype = GL_UNSIGNED_INT;
+        break;
     case QRhiTexture::D16:
         *glintformat = GL_DEPTH_COMPONENT16;
         *glsizedintformat = *glintformat;
@@ -1383,6 +1426,11 @@ bool QRhiGles2::isTextureFormatSupported(QRhiTexture::Format format, QRhiTexture
     case QRhiTexture::R8:
     case QRhiTexture::R8UI:
         return caps.r8Format;
+
+    case QRhiTexture::R32UI:
+    case QRhiTexture::RG32UI:
+    case QRhiTexture::RGBA32UI:
+        return caps.r32uiFormat;
 
     case QRhiTexture::RG8:
         return caps.r8Format;
@@ -1505,6 +1553,8 @@ bool QRhiGles2::isFeatureSupported(QRhi::Feature feature) const
     case QRhi::VariableRateShadingMap:
     case QRhi::VariableRateShadingMapWithTexture:
         return false;
+    case QRhi::PerRenderTargetBlending:
+        return caps.perRenderTargetBlending;
     default:
         Q_UNREACHABLE_RETURN(false);
     }
@@ -1573,6 +1623,11 @@ bool QRhiGles2::makeThreadLocalNativeContextCurrent()
         return ensureContext(currentSwapChain->surface);
     else
         return ensureContext();
+}
+
+void QRhiGles2::setQueueSubmitParams(QRhiNativeHandles *)
+{
+    // not applicable
 }
 
 void QRhiGles2::releaseCachedResources()
@@ -3874,54 +3929,63 @@ void QRhiGles2::executeBindGraphicsPipeline(QGles2CommandBuffer *cbD, QGles2Grap
     }
 
     if (!psD->m_targetBlends.isEmpty()) {
-        // We do not have MRT support here, meaning all targets use the blend
-        // params from the first one. This is technically incorrect, even if
-        // nothing in Qt relies on it. However, considering that
-        // glBlendFuncSeparatei is only available in GL 4.0+ and GLES 3.2+, we
-        // may just live with this for now because no point in bothering if it
-        // won't be usable on many GLES (3.1 or 3.0) systems.
-        const QRhiGraphicsPipeline::TargetBlend &targetBlend(psD->m_targetBlends.first());
-
-        const QGles2CommandBuffer::GraphicsPassState::ColorMask colorMask = {
-            targetBlend.colorWrite.testFlag(QRhiGraphicsPipeline::R),
-            targetBlend.colorWrite.testFlag(QRhiGraphicsPipeline::G),
-            targetBlend.colorWrite.testFlag(QRhiGraphicsPipeline::B),
-            targetBlend.colorWrite.testFlag(QRhiGraphicsPipeline::A)
-        };
-        if (forceUpdate || colorMask != state.colorMask) {
-            state.colorMask = colorMask;
-            f->glColorMask(colorMask.r, colorMask.g, colorMask.b, colorMask.a);
-        }
-
-        const bool blendEnabled = targetBlend.enable;
-        const QGles2CommandBuffer::GraphicsPassState::Blend blend = {
-            toGlBlendFactor(targetBlend.srcColor),
-            toGlBlendFactor(targetBlend.dstColor),
-            toGlBlendFactor(targetBlend.srcAlpha),
-            toGlBlendFactor(targetBlend.dstAlpha),
-            toGlBlendOp(targetBlend.opColor),
-            toGlBlendOp(targetBlend.opAlpha)
-        };
-        if (forceUpdate || blendEnabled != state.blendEnabled || (blendEnabled && blend != state.blend)) {
-            state.blendEnabled = blendEnabled;
-            if (blendEnabled) {
-                state.blend = blend;
-                f->glEnable(GL_BLEND);
-                f->glBlendFuncSeparate(blend.srcColor, blend.dstColor, blend.srcAlpha, blend.dstAlpha);
-                f->glBlendEquationSeparate(blend.opColor, blend.opAlpha);
-            } else {
-                f->glDisable(GL_BLEND);
+        GLint buffer = 0;
+        bool anyBlendEnabled = false;
+        for (const auto targetBlend : psD->m_targetBlends) {
+            const QGles2CommandBuffer::GraphicsPassState::ColorMask colorMask = {
+                targetBlend.colorWrite.testFlag(QRhiGraphicsPipeline::R),
+                targetBlend.colorWrite.testFlag(QRhiGraphicsPipeline::G),
+                targetBlend.colorWrite.testFlag(QRhiGraphicsPipeline::B),
+                targetBlend.colorWrite.testFlag(QRhiGraphicsPipeline::A)
+            };
+            if (forceUpdate || colorMask != state.colorMask[buffer]) {
+                state.colorMask[buffer] = colorMask;
+                if (caps.perRenderTargetBlending)
+                    f->glColorMaski(buffer, colorMask.r, colorMask.g, colorMask.b, colorMask.a);
+                else
+                    f->glColorMask(colorMask.r, colorMask.g, colorMask.b, colorMask.a);
             }
+
+            const bool blendEnabled = targetBlend.enable;
+            const QGles2CommandBuffer::GraphicsPassState::Blend blend = {
+                toGlBlendFactor(targetBlend.srcColor),
+                toGlBlendFactor(targetBlend.dstColor),
+                toGlBlendFactor(targetBlend.srcAlpha),
+                toGlBlendFactor(targetBlend.dstAlpha),
+                toGlBlendOp(targetBlend.opColor),
+                toGlBlendOp(targetBlend.opAlpha)
+            };
+            anyBlendEnabled |= blendEnabled;
+            if (forceUpdate || blendEnabled != state.blendEnabled[buffer] || (blendEnabled && blend != state.blend[buffer])) {
+                state.blendEnabled[buffer] = blendEnabled;
+                if (blendEnabled) {
+                    state.blend[buffer] = blend;
+                    if (caps.perRenderTargetBlending) {
+                        f->glBlendFuncSeparatei(buffer, blend.srcColor, blend.dstColor, blend.srcAlpha, blend.dstAlpha);
+                        f->glBlendEquationSeparatei(buffer, blend.opColor, blend.opAlpha);
+                    } else {
+                        f->glBlendFuncSeparate(blend.srcColor, blend.dstColor, blend.srcAlpha, blend.dstAlpha);
+                        f->glBlendEquationSeparate(blend.opColor, blend.opAlpha);
+                    }
+                }
+            }
+            buffer++;
+            if (!caps.perRenderTargetBlending)
+                break;
         }
+        if (anyBlendEnabled)
+            f->glEnable(GL_BLEND);
+        else
+            f->glDisable(GL_BLEND);
     } else {
         const QGles2CommandBuffer::GraphicsPassState::ColorMask colorMask = { true, true, true, true };
-        if (forceUpdate || colorMask != state.colorMask) {
-            state.colorMask = colorMask;
+        if (forceUpdate || colorMask != state.colorMask[0]) {
+            state.colorMask[0] = colorMask;
             f->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         }
         const bool blendEnabled = false;
-        if (forceUpdate || blendEnabled != state.blendEnabled) {
-            state.blendEnabled = blendEnabled;
+        if (forceUpdate || blendEnabled != state.blendEnabled[0]) {
+            state.blendEnabled[0] = blendEnabled;
             f->glDisable(GL_BLEND);
         }
     }
@@ -5412,14 +5476,15 @@ void QGles2Buffer::endFullDynamicBufferUpdateForCurrentFrame()
     }
 }
 
-void QGles2Buffer::fullDynamicBufferUpdateForCurrentFrame(const void *bufferData)
+void QGles2Buffer::fullDynamicBufferUpdateForCurrentFrame(const void *bufferData, quint32 size)
 {
+    const quint32 copySize = size > 0 ? size : m_size;
     if (!m_usage.testFlag(UniformBuffer)) {
         QRHI_RES_RHI(QRhiGles2);
         rhiD->f->glBindBuffer(targetForDataOps, buffer);
-        rhiD->f->glBufferSubData(targetForDataOps, 0, m_size, bufferData);
+        rhiD->f->glBufferSubData(targetForDataOps, 0, copySize, bufferData);
     } else {
-        memcpy(data.data(), bufferData, m_size);
+        memcpy(data.data(), bufferData, copySize);
     }
 }
 
@@ -5483,8 +5548,15 @@ bool QGles2RenderBuffer::create()
     switch (m_type) {
     case QRhiRenderBuffer::DepthStencil:
         if (rhiD->caps.msaaRenderBuffer && samples > 1) {
-            rhiD->f->glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8,
-                                                      size.width(), size.height());
+            if (rhiD->caps.glesMultisampleRenderToTexture) {
+                // Must match the logic in QGles2TextureRenderTarget::create().
+                // EXT and non-EXT are not the same thing.
+                rhiD->glRenderbufferStorageMultisampleEXT(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8,
+                                                          size.width(), size.height());
+            } else {
+                rhiD->f->glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8,
+                                                          size.width(), size.height());
+            }
             stencilRenderbuffer = 0;
         } else if (rhiD->caps.packedDepthStencil || rhiD->caps.needsDepthStencilCombinedAttach) {
             const GLenum storage = rhiD->caps.needsDepthStencilCombinedAttach ? GL_DEPTH_STENCIL : GL_DEPTH24_STENCIL8;
@@ -5786,6 +5858,11 @@ bool QGles2Texture::create()
                 rhiD->f->glTexStorage2D(target, mipLevelCount, glsizedintformat, size.width(),
                                         is1D ? qMax(0, m_arraySize) : size.height());
         }
+        // Make sure the min filter is set to something non-mipmap-based already
+        // here, given the ridiculous default of GL. It is changed based on
+        // the sampler later, but there could be cases when one pulls the native
+        // object out via nativeTexture() right away.
+        rhiD->f->glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         specified = true;
     } else {
         // Cannot use glCompressedTexImage2D without valid data, so defer.
@@ -6432,11 +6509,18 @@ bool QGles2GraphicsPipeline::create()
             // force replacing existing cache entry (if there is one, then
             // something is wrong with it, as there was no hit)
             rhiD->trySaveToPipelineCache(program, cacheKey, true);
-        } else {
-            // legacy QOpenGLShaderProgram style behavior: the "pipeline cache"
-            // was not enabled, so instead store to the Qt 5 disk cache
-            rhiD->trySaveToDiskCache(program, cacheKey);
         }
+        // legacy QOpenGLShaderProgram style behavior: do this always, even
+        // though it is superfluous with the "pipeline cache" enabled. Continue
+        // storing to the Qt 5 style individual-file disk cache, because there
+        // is no guarantee one retrieves the "pipeline cache" blob and writes it
+        // out. Classic example: if Qt Quick only retrieves and stores the
+        // combined cache contents when exiting, applications that never exit
+        // cleanly (because they are killed, Ctrl+C'd, etc.) never store any
+        // program binaries! Therefore, to maintain Qt 5 behavioral
+        // compatibility, continue writing out the individual files no matter
+        // what.
+        rhiD->trySaveToDiskCache(program, cacheKey);
     } else {
         Q_ASSERT(cacheResult == QRhiGles2::ProgramCacheHit);
         if (rhiD->rhiFlags.testFlag(QRhi::EnablePipelineCacheDataSave)) {
@@ -6552,11 +6636,9 @@ bool QGles2ComputePipeline::create()
             // force replacing existing cache entry (if there is one, then
             // something is wrong with it, as there was no hit)
             rhiD->trySaveToPipelineCache(program, cacheKey, true);
-        } else {
-            // legacy QOpenGLShaderProgram style behavior: the "pipeline cache"
-            // was not enabled, so instead store to the Qt 5 disk cache
-            rhiD->trySaveToDiskCache(program, cacheKey);
         }
+        // legacy QOpenGLShaderProgram style behavior
+        rhiD->trySaveToDiskCache(program, cacheKey);
     } else {
         Q_ASSERT(cacheResult == QRhiGles2::ProgramCacheHit);
         if (rhiD->rhiFlags.testFlag(QRhi::EnablePipelineCacheDataSave)) {

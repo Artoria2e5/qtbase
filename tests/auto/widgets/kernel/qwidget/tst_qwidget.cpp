@@ -85,17 +85,6 @@ static HWND winHandleOf(const QWidget *w)
 #  define Q_CHECK_PAINTEVENTS
 #endif
 
-#ifdef Q_OS_MACOS
-#include <Security/AuthSession.h>
-bool macHasAccessToWindowsServer()
-{
-    SecuritySessionId mySession;
-    SessionAttributeBits sessionInfo;
-    SessionGetInfo(callerSecuritySession, &mySession, &sessionInfo);
-    return (sessionInfo & sessionHasGraphicAccess);
-}
-#endif
-
 #if defined(Q_OS_WIN)
 static inline void setWindowsAnimationsEnabled(bool enabled)
 {
@@ -2591,6 +2580,9 @@ void tst_QWidget::tabOrderWithCompoundWidgets()
 
 void tst_QWidget::tabOrderWithProxyOutOfOrder()
 {
+    if (QGuiApplication::styleHints()->tabFocusBehavior() != Qt::TabFocusAllControls)
+        QSKIP("Test requires Qt::TabFocusAllControls tab focus behavior");
+
     Container container;
     container.setWindowTitle(QLatin1String(QTest::currentTestFunction()));
     container.setObjectName(QLatin1StringView("Container"));
@@ -3560,15 +3552,7 @@ void tst_QWidget::showMinimizedKeepsFocus()
 
         window.showNormal();
         QVERIFY(QTest::qWaitForWindowActive(&window));
-#ifdef Q_OS_MACOS
-        if (!macHasAccessToWindowsServer())
-            QEXPECT_FAIL("", "When not having WindowServer access, we lose focus.", Continue);
-#endif
         QTRY_COMPARE(window.focusWidget(), firstchild);
-#ifdef Q_OS_MACOS
-        if (!macHasAccessToWindowsServer())
-            QEXPECT_FAIL("", "When not having WindowServer access, we lose focus.", Continue);
-#endif
         QTRY_COMPARE(QApplication::focusWidget(), firstchild);
     }
 }
@@ -4644,29 +4628,26 @@ void tst_QWidget::widgetAt()
     w1->showNormal();
     QVERIFY(QTest::qWaitForWindowExposed(w1.data()));
     const QPoint testPos = referencePos + QPoint(100, 100);
-    QWidget *wr;
-    QTRY_VERIFY((wr = QApplication::widgetAt((testPos))));
-    QCOMPARE(wr->objectName(), QString("w1"));
+    QTRY_COMPARE(QApplication::widgetAt((testPos)), w1.data());
 
     w2->showNormal();
     QVERIFY(QTest::qWaitForWindowExposed(w2.data()));
-    QTRY_VERIFY((wr = QApplication::widgetAt(testPos)));
-    QCOMPARE(wr->objectName(), QString("w2"));
+    QTRY_COMPARE(QApplication::widgetAt(testPos), w2.data());
 
     w2->lower();
-    QTRY_VERIFY((wr = QApplication::widgetAt(testPos)) && wr->objectName() == QString("w1"));
+    QTRY_COMPARE(QApplication::widgetAt(testPos), w1.data());
     w2->raise();
 
-    QTRY_VERIFY((wr = QApplication::widgetAt(testPos)) && wr->objectName() == QString("w2"));
+    QTRY_COMPARE(QApplication::widgetAt(testPos), w2.data());
 
     QWidget *w3 = new QWidget(w2.data());
     w3->setGeometry(10,10,50,50);
     w3->setObjectName("w3");
     w3->showNormal();
-    QTRY_VERIFY((wr = QApplication::widgetAt(testPos)) && wr->objectName() == QString("w3"));
+    QTRY_COMPARE(QApplication::widgetAt(testPos), w3);
 
     w3->setAttribute(Qt::WA_TransparentForMouseEvents);
-    QTRY_VERIFY((wr = QApplication::widgetAt(testPos)) && wr->objectName() == QString("w2"));
+    QTRY_COMPARE(QApplication::widgetAt(testPos), w2.data());
 
     if (!QGuiApplicationPrivate::platformIntegration()
                                ->hasCapability(QPlatformIntegration::WindowMasks)) {
@@ -4678,10 +4659,8 @@ void tst_QWidget::widgetAt()
     rgn -= QRect(point, QSize(1,1));
     w2->setMask(rgn);
 
-    QTRY_VERIFY((wr = QApplication::widgetAt(testPos)));
-    QTRY_COMPARE(wr->objectName(), w1->objectName());
-    QTRY_VERIFY((wr = QApplication::widgetAt(testPos + QPoint(1, 1))));
-    QTRY_COMPARE(wr->objectName(), w2->objectName());
+    QTRY_COMPARE(QApplication::widgetAt(testPos), w1.data());
+    QTRY_COMPARE(QApplication::widgetAt(testPos + QPoint(1, 1)), w2.data());
 
     QBitmap bitmap(w2->size());
     QPainter p(&bitmap);
@@ -4691,7 +4670,7 @@ void tst_QWidget::widgetAt()
     p.end();
     w2->setMask(bitmap);
     QTRY_COMPARE(QApplication::widgetAt(testPos), w1.data());
-    QTRY_VERIFY(QApplication::widgetAt(testPos + QPoint(1, 1)) == w2.data());
+    QTRY_COMPARE(QApplication::widgetAt(testPos + QPoint(1, 1)), w2.data());
 }
 
 void tst_QWidget::task110173()
@@ -9633,10 +9612,6 @@ void tst_QWidget::doubleRepaint()
     QSKIP("QTBUG-52974");
 #endif
 
-#if defined(Q_OS_MACOS)
-    if (!macHasAccessToWindowsServer())
-        QSKIP("Not having window server access causes the wrong number of repaints to be issues");
-#endif
    UpdateWidget widget;
    widget.setPalette(simplePalette());
    widget.setWindowTitle(QLatin1String(QTest::currentTestFunction()));
@@ -9737,6 +9712,7 @@ void tst_QWidget::dumpObjectTree()
     Q_SET_OBJECT_NAME(w);
     w.move(100, 100);
     w.resize(200, 200);
+    QPoint pos = w.pos();
 
     QLineEdit le(&w);
     Q_SET_OBJECT_NAME(le);
@@ -9755,6 +9731,7 @@ void tst_QWidget::dumpObjectTree()
 
     QTestPrivate::androidCompatibleShow(&w);
     QVERIFY(QTest::qWaitForWindowActive(&w));
+    QTRY_COMPARE(w.pos(), pos);
 
     {
         const char * const expected[] = {
@@ -11026,7 +11003,7 @@ void tst_QWidget::hoverPosition()
         QSKIP("Can't move cursor");
 
     QWidget root;
-    root.resize(300, 300);
+    root.setGeometry(100,100,300,300);
     HoverWidget h(&root);
     h.setGeometry(100, 100, 100, 100);
     root.show();
@@ -11800,10 +11777,26 @@ void tst_QWidget::childAt()
     grandChild->setAutoFillBackground(true);
     grandChild->setGeometry(-20, -20, 220, 220);
 
+    QWidget *emptyChild = new QWidget(child);
+    emptyChild->setPalette(Qt::green);
+    emptyChild->setAutoFillBackground(true);
+    emptyChild->setGeometry(0, 159, 160, 0);
+
     QVERIFY(!parent.childAt(19, 19));
     QVERIFY(!parent.childAt(180, 180));
     QCOMPARE(parent.childAt(20, 20), grandChild);
     QCOMPARE(parent.childAt(179, 179), grandChild);
+
+    QCOMPARE(parent.childAt(120, 179), grandChild);
+    QCOMPARE(parent.childAt(QPointF(120.0, 178.9)), grandChild);
+    QVERIFY(!parent.childAt(120, 180));
+    QVERIFY(!parent.childAt(QPointF(120, 179.1)));
+
+    emptyChild->setGeometry(100, 0, 0, 160);
+
+    QCOMPARE(parent.childAt(120, 120), grandChild);
+    QCOMPARE(parent.childAt(QPointF(120.5, 120.0)), grandChild);
+    QCOMPARE(parent.childAt(QPointF(119.5, 120.0)), grandChild);
 
     grandChild->setAttribute(Qt::WA_TransparentForMouseEvents);
     QCOMPARE(parent.childAt(20, 20), child);
@@ -12922,14 +12915,14 @@ void tst_QWidget::largerThanScreen_QTBUG30142()
     widget.resize(200, 4000);
     widget.show();
     QVERIFY(QTest::qWaitForWindowExposed(&widget));
-    QVERIFY2(widget.frameGeometry().y() >= 0,
+    QTRY_VERIFY2(widget.frameGeometry().y() >= 0,
              msgComparisonFailed(widget.frameGeometry().y(), " >=", 0));
 
     QWidget widget2;
     widget2.resize(10000, 400);
     widget2.show();
     QVERIFY(QTest::qWaitForWindowExposed(&widget2));
-    QVERIFY2(widget2.frameGeometry().x() >= 0,
+    QTRY_VERIFY2(widget2.frameGeometry().x() >= 0,
              msgComparisonFailed(widget.frameGeometry().x(), " >=", 0));
 }
 
@@ -13504,7 +13497,7 @@ void tst_QWidget::setParentChangesFocus()
         secondary->setParent(targetParent ? &window : nullptr, targetType);
         secondary->show(); // reparenting hides, so show again
         QApplicationPrivate::setActiveWindow(secondary.get());
-        QVERIFY(QTest::qWaitForWindowActive(secondary.get()));
+        QTRY_VERIFY(QTest::qWaitForWindowActive(secondary.get()));
     }
     QVERIFY(QTest::qWaitFor([]{ return QApplication::focusWidget(); }));
     QCOMPARE(QApplication::focusWidget()->objectName(), focusWidget);

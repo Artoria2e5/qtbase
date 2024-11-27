@@ -721,19 +721,23 @@ QImage QWindowsFontEngineDirectWrite::alphaMapForGlyph(glyph_t glyph,
 {
     QImage im = imageForGlyph(glyph, subPixelPosition, glyphMargin(Format_A8), t);
 
-    QImage alphaMap(im.width(), im.height(), QImage::Format_Alpha8);
+    if (!im.isNull()) {
+        QImage alphaMap(im.width(), im.height(), QImage::Format_Alpha8);
 
-    for (int y=0; y<im.height(); ++y) {
-        const uint *src = reinterpret_cast<const uint *>(im.constScanLine(y));
-        uchar *dst = alphaMap.scanLine(y);
-        for (int x=0; x<im.width(); ++x) {
-            *dst = 255 - (m_fontEngineData->pow_gamma[qGray(0xffffffff - *src)] * 255. / 2047.);
-            ++dst;
-            ++src;
+        for (int y=0; y<im.height(); ++y) {
+            const uint *src = reinterpret_cast<const uint *>(im.constScanLine(y));
+            uchar *dst = alphaMap.scanLine(y);
+            for (int x=0; x<im.width(); ++x) {
+                *dst = 255 - (m_fontEngineData->pow_gamma[qGray(0xffffffff - *src)] * 255. / 2047.);
+                ++dst;
+                ++src;
+            }
         }
-    }
 
-    return alphaMap;
+        return alphaMap;
+    } else {
+        return QFontEngine::alphaMapForGlyph(glyph, t);
+    }
 }
 
 QImage QWindowsFontEngineDirectWrite::alphaMapForGlyph(glyph_t glyph,
@@ -745,7 +749,8 @@ QImage QWindowsFontEngineDirectWrite::alphaMapForGlyph(glyph_t glyph,
 bool QWindowsFontEngineDirectWrite::supportsHorizontalSubPixelPositions() const
 {
     DWRITE_RENDERING_MODE renderMode = hintingPreferenceToRenderingMode(fontDef);
-    return  (renderMode != DWRITE_RENDERING_MODE_GDI_CLASSIC
+    return  (!isColorFont()
+            && renderMode != DWRITE_RENDERING_MODE_GDI_CLASSIC
             && renderMode != DWRITE_RENDERING_MODE_GDI_NATURAL
             && renderMode != DWRITE_RENDERING_MODE_ALIASED);
 }
@@ -855,8 +860,10 @@ QImage QWindowsFontEngineDirectWrite::imageForGlyph(glyph_t t,
                                                 : DWRITE_TEXTURE_CLEARTYPE_3x1,
                                              &rect);
 
-        if (rect.top == rect.bottom || rect.left == rect.right)
+        if (rect.top == rect.bottom || rect.left == rect.right) {
+            qCDebug(lcQpaFonts) << __FUNCTION__ << "Cannot get alpha texture bounds. Falling back to slower rendering path.";
             return QImage();
+        }
 
         QRect boundingRect = QRect(QPoint(rect.left - margin,
                                           rect.top - margin),
@@ -886,63 +893,64 @@ QImage QWindowsFontEngineDirectWrite::imageForGlyph(glyph_t t,
             image.fill(0xffffffff);
         }
 
-        BOOL ok = true;
-
         if (SUCCEEDED(hr)) {
+            BOOL ok = true;
             while (SUCCEEDED(hr) && ok) {
-                const DWRITE_COLOR_GLYPH_RUN *colorGlyphRun = 0;
-                hr = enumerator->GetCurrentRun(&colorGlyphRun);
-                if (FAILED(hr)) { // No colored runs, only outline
-                    qErrnoWarning(hr, "%s: IDWriteColorGlyphRunEnumerator::GetCurrentRun failed", __FUNCTION__);
-                    break;
-                }
-
-                IDWriteGlyphRunAnalysis *colorGlyphsAnalysis = NULL;
-                hr = factory2->CreateGlyphRunAnalysis(
-                            &colorGlyphRun->glyphRun,
-                            &transform,
-                            renderMode,
-                            measureMode,
-                            gridFitMode,
-                            DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
-                            0.0, 0.0,
-                            &colorGlyphsAnalysis
-                            );
-
-                if (FAILED(hr)) {
-                    qErrnoWarning(hr, "%s: CreateGlyphRunAnalysis failed for color run", __FUNCTION__);
-                    break;
-                }
-
-                float r, g, b, a;
-                if (colorGlyphRun->paletteIndex == 0xFFFF) {
-                    r = float(color.redF());
-                    g = float(color.greenF());
-                    b = float(color.blueF());
-                    a = float(color.alphaF());
-                } else {
-                    r = qBound(0.0f, colorGlyphRun->runColor.r, 1.0f);
-                    g = qBound(0.0f, colorGlyphRun->runColor.g, 1.0f);
-                    b = qBound(0.0f, colorGlyphRun->runColor.b, 1.0f);
-                    a = qBound(0.0f, colorGlyphRun->runColor.a, 1.0f);
-                }
-
-                if (!qFuzzyIsNull(a)) {
-                    renderGlyphRun(&image,
-                                   r,
-                                   g,
-                                   b,
-                                   a,
-                                   colorGlyphsAnalysis,
-                                   boundingRect,
-                                   renderMode);
-                }
-                colorGlyphsAnalysis->Release();
-
                 hr = enumerator->MoveNext(&ok);
                 if (FAILED(hr)) {
                     qErrnoWarning(hr, "%s: IDWriteColorGlyphRunEnumerator::MoveNext failed", __FUNCTION__);
                     break;
+                }
+
+                if (ok) {
+                    const DWRITE_COLOR_GLYPH_RUN *colorGlyphRun = 0;
+                    hr = enumerator->GetCurrentRun(&colorGlyphRun);
+                    if (FAILED(hr)) { // No colored runs, only outline
+                        qErrnoWarning(hr, "%s: IDWriteColorGlyphRunEnumerator::GetCurrentRun failed", __FUNCTION__);
+                        break;
+                    }
+
+                    IDWriteGlyphRunAnalysis *colorGlyphsAnalysis = NULL;
+                    hr = factory2->CreateGlyphRunAnalysis(
+                                &colorGlyphRun->glyphRun,
+                                &transform,
+                                renderMode,
+                                measureMode,
+                                gridFitMode,
+                                DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+                                0.0, 0.0,
+                                &colorGlyphsAnalysis
+                                );
+
+                    if (FAILED(hr)) {
+                        qErrnoWarning(hr, "%s: CreateGlyphRunAnalysis failed for color run", __FUNCTION__);
+                        break;
+                    }
+
+                    float r, g, b, a;
+                    if (colorGlyphRun->paletteIndex == 0xFFFF) {
+                        r = float(color.redF());
+                        g = float(color.greenF());
+                        b = float(color.blueF());
+                        a = 1.0;
+                    } else {
+                        r = qBound(0.0f, colorGlyphRun->runColor.r, 1.0f);
+                        g = qBound(0.0f, colorGlyphRun->runColor.g, 1.0f);
+                        b = qBound(0.0f, colorGlyphRun->runColor.b, 1.0f);
+                        a = qBound(0.0f, colorGlyphRun->runColor.a, 1.0f);
+                    }
+
+                    if (!qFuzzyIsNull(a)) {
+                        renderGlyphRun(&image,
+                                       r,
+                                       g,
+                                       b,
+                                       a,
+                                       colorGlyphsAnalysis,
+                                       boundingRect,
+                                       renderMode);
+                    }
+                    colorGlyphsAnalysis->Release();
                 }
             }
         } else {
@@ -1069,6 +1077,12 @@ QImage QWindowsFontEngineDirectWrite::alphaRGBMapForGlyph(glyph_t t,
                                 subPixelPosition,
                                 glyphMargin(QFontEngine::Format_A32),
                                 xform);
+
+    if (mask.isNull()) {
+        mask = QFontEngine::renderedPathForGlyph(t, Qt::white);
+        if (!xform.isIdentity())
+            mask = mask.transformed(xform);
+    }
 
     return mask.depth() == 32
            ? mask
@@ -1218,7 +1232,7 @@ glyph_metrics_t QWindowsFontEngineDirectWrite::alphaMapBoundingBox(glyph_t glyph
         int margin = glyphMargin(format);
 
         if (rect.left == rect.right || rect.top == rect.bottom)
-            return glyph_metrics_t();
+            return bbox;
 
         return glyph_metrics_t(rect.left,
                                rect.top,

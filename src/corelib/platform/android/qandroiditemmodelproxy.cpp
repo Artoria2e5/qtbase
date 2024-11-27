@@ -5,6 +5,8 @@
 #include <QtCore/private/qandroidmodelindexproxy_p.h>
 #include <QtCore/private/qandroidtypeconverter_p.h>
 
+#include <QtCore/qcoreapplication.h>
+
 QT_BEGIN_NAMESPACE
 
 using namespace QtJniTypes;
@@ -67,9 +69,9 @@ QHash<int, QByteArray> QAndroidItemModelProxy::roleNames() const
     QHash<int, QByteArray> roleNames;
     HashMap hashMap = jInstance.callMethod<HashMap>("roleNames");
     Set set = hashMap.callMethod<Set>("keySet");
-    QJniArray<jobject> keyArray = set.callMethod<QJniArray<jobject>>("toArray");
+    const QJniArray keyArray = set.callMethod<jobject[]>("toArray");
 
-    for (auto key : keyArray) {
+    for (const auto &key : keyArray) {
         const QJniObject roleName = hashMap.callMethod<jobject>("get", key);
         const int intKey = QJniObject(key).callMethod<jint>("intValue");
         const QByteArray roleByteArray = String(roleName).toString().toLatin1();
@@ -119,6 +121,20 @@ QModelIndex QAndroidItemModelProxy::siblingDefault(int row, int column, const QM
     return QAbstractItemModel::sibling(row, column, parent);
 }
 
+bool QAndroidItemModelProxy::setData(const QModelIndex &index, const QVariant &value, int role)
+{
+    Q_ASSERT(jInstance.isValid());
+    auto jIndex = QAndroidModelIndexProxy::jInstance(index);
+    auto jValue = QAndroidTypeConverter::toJavaObject(value, QJniEnvironment::getJniEnv());
+    return jInstance.callMethod<jboolean>("setData", jIndex, jValue, role);
+}
+
+bool QAndroidItemModelProxy::setDataDefault(const QModelIndex &index, const QVariant &value,
+                                            int role)
+{
+    return QAbstractItemModel::setData(index, value, role);
+}
+
 Q_REQUIRED_RESULT QAbstractItemModel *
 QAndroidItemModelProxy::nativeInstance(JQtAbstractItemModel itemModel)
 {
@@ -131,7 +147,12 @@ QAndroidItemModelProxy::createNativeProxy(QJniObject itemModel)
 {
     QAbstractItemModel *nativeProxy = nativeInstance(itemModel);
     if (!nativeProxy) {
+        Q_ASSERT(QCoreApplication::instance());
+
         nativeProxy = new QAndroidItemModelProxy(itemModel);
+        QThread *qtMainThread = QCoreApplication::instance()->thread();
+        if (nativeProxy->thread() != qtMainThread)
+            nativeProxy->moveToThread(qtMainThread);
 
         itemModel.callMethod<void>("setNativeReference", reinterpret_cast<jlong>(nativeProxy));
         connect(nativeProxy, &QAndroidItemModelProxy::destroyed, nativeProxy, [](QObject *obj) {
@@ -139,6 +160,19 @@ QAndroidItemModelProxy::createNativeProxy(QJniObject itemModel)
             if (proxy)
                 proxy->jInstance.callMethod<void>("detachFromNative");
         });
+
+        connect(nativeProxy, &QAndroidItemModelProxy::dataChanged, nativeProxy,
+                [nativeProxy](const QModelIndex &topLeft, const QModelIndex &bottomRight,
+                              const QList<int> &roles) {
+                    auto proxy = qobject_cast<QAndroidItemModelProxy *>(nativeProxy);
+                    if (proxy) {
+                        QJniObject jInstance = proxy->jInstance;
+                        jInstance.callMethod<void>("handleDataChanged",
+                                                    QAndroidModelIndexProxy::jInstance(topLeft),
+                                                    QAndroidModelIndexProxy::jInstance(bottomRight),
+                                                    QJniArray<jint>(roles));
+                    }
+                });
     }
     return nativeProxy;
 }
@@ -194,8 +228,7 @@ jobject QAndroidItemModelProxy::jni_roleNames(JNIEnv *env, jobject object)
     HashMap jRoleNames{};
     for (auto [role, roleName] : roleNames.asKeyValueRange()) {
         const Integer jRole(role);
-        const QJniObject jRoleName = QJniObject::fromString(roleName);
-        jRoleNames.callMethod<jobject>("put", jRole.object(), jRoleName.object());
+        jRoleNames.callMethod<jobject>("put", jRole.object(), QString::fromUtf8(roleName));
     }
     return env->NewLocalRef(jRoleNames.object());
 }
@@ -205,7 +238,8 @@ jobject QAndroidItemModelProxy::jni_createIndex(JNIEnv *env, jobject object, jin
 {
     QModelIndex (QAndroidItemModelProxy::*createIndexPtr)(int, int, quintptr) const =
             &QAndroidItemModelProxy::createIndex;
-    const QModelIndex index = invokeNativeProxyMethod(env, object, createIndexPtr, row, column, id);
+    const QModelIndex index =
+            invokeNativeProxyMethod(env, object, createIndexPtr, row, column, quintptr(id));
     return env->NewLocalRef(QAndroidModelIndexProxy::jInstance(index).object());
 }
 
@@ -338,6 +372,26 @@ jobject QAndroidItemModelProxy::jni_sibling(JNIEnv *env, jobject object, jint ro
     return env->NewLocalRef(QAndroidModelIndexProxy::jInstance(index).object());
 }
 
+jboolean QAndroidItemModelProxy::jni_setData(JNIEnv *env, jobject object, JQtModelIndex index,
+                                             jobject &value, jint role)
+{
+    const QModelIndex nativeIndex = QAndroidModelIndexProxy::qInstance(index);
+    const QVariant qValue = QAndroidTypeConverter::toQVariant(QJniObject(value));
+    return invokeNativeImpl(env, object, &QAndroidItemModelProxy::setDataDefault,
+                            &QAbstractItemModel::setData, nativeIndex, qValue, role);
+}
+
+void QAndroidItemModelProxy::jni_dataChanged(JNIEnv *env, jobject object, JQtModelIndex topLeft,
+                                             JQtModelIndex bottomRight, QJniArray<jint> roles)
+{
+    const QModelIndex nativeTopLeft = QAndroidModelIndexProxy::qInstance(topLeft);
+    const QModelIndex nativeBottomRight = QAndroidModelIndexProxy::qInstance(bottomRight);
+    const QList<int> nativeRoles = roles.toContainer();
+    invokeNativeImpl(env, object, &QAndroidItemModelProxy::dataChanged,
+                     &QAbstractItemModel::dataChanged, nativeTopLeft, nativeBottomRight,
+                     nativeRoles);
+}
+
 bool QAndroidItemModelProxy::registerAbstractNatives(QJniEnvironment &env)
 {
     return env.registerNativeMethods(
@@ -362,7 +416,9 @@ bool QAndroidItemModelProxy::registerAbstractNatives(QJniEnvironment &env)
               Q_JNI_NATIVE_SCOPED_METHOD(jni_endRemoveColumns, QAndroidItemModelProxy),
               Q_JNI_NATIVE_SCOPED_METHOD(jni_endRemoveRows, QAndroidItemModelProxy),
               Q_JNI_NATIVE_SCOPED_METHOD(jni_endResetModel, QAndroidItemModelProxy),
-              Q_JNI_NATIVE_SCOPED_METHOD(jni_sibling, QAndroidItemModelProxy) });
+              Q_JNI_NATIVE_SCOPED_METHOD(jni_sibling, QAndroidItemModelProxy),
+              Q_JNI_NATIVE_SCOPED_METHOD(jni_setData, QAndroidItemModelProxy),
+              Q_JNI_NATIVE_SCOPED_METHOD(jni_dataChanged, QAndroidItemModelProxy) });
 }
 
 bool QAndroidItemModelProxy::registerProxyNatives(QJniEnvironment &env)

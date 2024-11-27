@@ -22,6 +22,8 @@
 
 #include "private/qnetconmonitor_p.h"
 
+#include <QtNetwork/private/qtnetworkglobal_p.h>
+
 #include <memory>
 #include <utility>
 
@@ -65,8 +67,10 @@ void QHttpNetworkConnectionChannel::init()
 #ifndef QT_NO_SSL
     if (connection->d_func()->encrypt)
         socket = new QSslSocket;
+#if QT_CONFIG(localserver)
     else if (connection->d_func()->isLocalSocket)
         socket = new QLocalSocket;
+#endif
     else
         socket = new QTcpSocket;
 #else
@@ -108,6 +112,7 @@ void QHttpNetworkConnectionChannel::init()
             QObject::connect(socket, &QAbstractSocket::errorOccurred,
                             this, &QHttpNetworkConnectionChannel::_q_error,
                             Qt::DirectConnection);
+#if QT_CONFIG(localserver)
         } else if constexpr (std::is_same_v<SocketType, QLocalSocket>) {
             auto convertAndForward = [this](QLocalSocket::LocalSocketError error) {
                 _q_error(static_cast<QAbstractSocket::SocketError>(error));
@@ -115,6 +120,7 @@ void QHttpNetworkConnectionChannel::init()
             QObject::connect(socket, &SocketType::errorOccurred,
                             this, std::move(convertAndForward),
                             Qt::DirectConnection);
+#endif
         }
     }, socket);
 
@@ -217,14 +223,14 @@ void QHttpNetworkConnectionChannel::abort()
 }
 
 
-bool QHttpNetworkConnectionChannel::sendRequest()
+void QHttpNetworkConnectionChannel::sendRequest()
 {
     Q_ASSERT(protocolHandler);
     if (waitingForPotentialAbort) {
         needInvokeSendRequest = true;
-        return false; // this return value is unused
+        return;
     }
-    return protocolHandler->sendRequest();
+    protocolHandler->sendRequest();
 }
 
 /*
@@ -423,8 +429,10 @@ bool QHttpNetworkConnectionChannel::ensureConnection()
                                      networkLayerPreference);
                     // For an Unbuffered QTcpSocket, the read buffer size has a special meaning.
                     s->setReadBufferSize(1 * 1024);
+#if QT_CONFIG(localserver)
                 } else if (auto *s = qobject_cast<QLocalSocket *>(socket)) {
                     s->connectToServer(connectHost);
+#endif
                 }
 #ifndef QT_NO_NETWORKPROXY
             } else {
@@ -484,9 +492,6 @@ void QHttpNetworkConnectionChannel::allDone()
             QHttp2ProtocolHandler *h2c = static_cast<QHttp2ProtocolHandler *>(protocolHandler.get());
             QMetaObject::invokeMethod(h2c, "_q_receiveReply", Qt::QueuedConnection);
             QMetaObject::invokeMethod(connection, "_q_startNextRequest", Qt::QueuedConnection);
-            // If we only had one request sent with H2 allowed, we may fail to send
-            // a client preface and SETTINGS, which is required by RFC 7540, 3.2.
-            QMetaObject::invokeMethod(h2c, "ensureClientPrefaceSent", Qt::QueuedConnection);
             return;
         } else {
             // Ok, whatever happened, we do not try HTTP/2 anymore ...
@@ -964,6 +969,7 @@ void QHttpNetworkConnectionChannel::_q_connected_abstract_socket(QAbstractSocket
     }
 }
 
+#if QT_CONFIG(localserver)
 void QHttpNetworkConnectionChannel::_q_connected_local_socket(QLocalSocket *localSocket)
 {
     state = QHttpNetworkConnectionChannel::IdleState;
@@ -972,13 +978,16 @@ void QHttpNetworkConnectionChannel::_q_connected_local_socket(QLocalSocket *loca
     if (reply)
         sendRequest();
 }
+#endif
 
 void QHttpNetworkConnectionChannel::_q_connected()
 {
     if (auto *s = qobject_cast<QAbstractSocket *>(socket))
         _q_connected_abstract_socket(s);
+#if QT_CONFIG(localserver)
     else if (auto *s = qobject_cast<QLocalSocket *>(socket))
         _q_connected_local_socket(s);
+#endif
 }
 
 void QHttpNetworkConnectionChannel::_q_error(QAbstractSocket::SocketError socketError)

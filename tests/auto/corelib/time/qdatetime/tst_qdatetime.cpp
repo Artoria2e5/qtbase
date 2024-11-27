@@ -10,10 +10,22 @@
 #include <private/qtenvironmentvariables_p.h> // for qTzSet(), qTzName()
 #include <private/qcomparisontesthelper_p.h>
 
-#if defined(Q_OS_WIN) && !QT_CONFIG(icu)
-#  define USING_WIN_TZ
+#undef USING_MS_TZDB
+#undef USING_WIN_TZ
+#ifdef Q_OS_WIN
+#  if QT_CONFIG(timezone_tzdb)
+#    define USING_MS_TZDB
+#  elif !QT_CONFIG(icu)
+#    define USING_WIN_TZ
+#  endif
 #endif
 
+#undef GLIBC_TZDB_MISPARSE
+#if QT_CONFIG(timezone_tzdb) && defined(__GLIBCXX__) // && _GLIBCXX_RELEASE <= 14
+#  define GLIBC_TZDB_MISPARSE // QTBUG-127598
+#endif
+
+#undef INADEQUATE_TZ_DATA
 #ifdef Q_OS_WIN
 #  include <qt_windows.h>
 #  ifdef USING_WIN_TZ
@@ -820,6 +832,10 @@ void tst_QDateTime::setMSecsSinceEpoch()
         QVERIFY(!cet.isValid()); // overflows
     } else if (zoneIsCET) {
         QVERIFY(cet.isValid());
+#ifdef USING_MS_TZDB
+        QEXPECT_FAIL("old max (Tue Jun 3 21:59:59 5874898)",
+                     "MS doesn't handle the distant future", Continue);
+#endif
         QCOMPARE(dt.toLocalTime(), cet);
 
         // Test converting from LocalTime to UTC back to LocalTime.
@@ -837,6 +853,10 @@ void tst_QDateTime::setMSecsSinceEpoch()
         dt2.setTimeZone(europe);
 #endif
         dt2.setMSecsSinceEpoch(msecs);
+#ifdef GLIBC_TZDB_MISPARSE
+        QEXPECT_FAIL("old max (Tue Jun 3 21:59:59 5874898)",
+                     "QTBUG-127598 Bad libstdc++ data", Continue);
+#endif
         if (cet.date().year() >= 1970 || cet.date() == utc.date())
             QCOMPARE(dt2.date(), cet.date());
 
@@ -913,11 +933,18 @@ void tst_QDateTime::fromMSecsSinceEpoch()
         QCOMPARE(dtOffset.time(), utc.time().addMSecs(60*60*1000));
     }
 
+#ifdef USING_MS_TZDB
+    if (zoneIsCET && QTest::currentDataTag() == "old max (Tue Jun 3 21:59:59 5874898)"_ba) {
+        qInfo("Distant future of CET unhandled");
+    } else
+#endif
     if (zoneIsCET) {
         QCOMPARE(dtLocal.toLocalTime(), cet);
         QCOMPARE(dtUtc.toLocalTime(), cet);
         if (msecs != Bound::max())
             QCOMPARE(dtOffset.toLocalTime(), cet);
+    } else {
+        qInfo("CET-specific test skipped");
     }
 
     if (!localOverflow)
@@ -969,6 +996,9 @@ void tst_QDateTime::fromSecsSinceEpoch()
 #endif
 
     const qint64 last = maxSeconds - qMax(lateZone, 0);
+#ifdef GLIBC_TZDB_MISPARSE
+    QEXPECT_FAIL("", "QTBUG-127598 Bad libstdc++ data", Continue);
+#endif
     QVERIFY(QDateTime::fromSecsSinceEpoch(last).isValid());
     QVERIFY(!QDateTime::fromSecsSinceEpoch(last + 1).isValid());
     const qint64 first = -maxSeconds - qMin(early.addYears(1).toLocalTime().offsetFromUtc(), 0);
@@ -3315,6 +3345,12 @@ void tst_QDateTime::fromStringStringFormat_data()
             << u"2018 wilful long working block relief 12-19T21:09 cruel"_s
             << u"yyyy wilful long working block relief MM-ddThh:mm cruel blurb encore flux"_s
             << 1900 << QDateTime();
+    QTest::newRow("fix-century-Mon")
+            << u"Monday, 23 April 12 22:51:41"_s << u"dddd, d MMMM yy hh:mm:ss"_s << 1900
+            << QDateTime(QDate(2012, 4, 23), QTime(22, 51, 41));
+    QTest::newRow("fix-century-Tue")
+            << u"Tuesday, 23 April 12 22:51:41"_s << u"dddd, d MMMM yy hh:mm:ss"_s << 2000
+            << QDateTime(QDate(1912, 4, 23), QTime(22, 51, 41));
 
     // test unicode
     QTest::newRow("unicode handling")
@@ -3334,6 +3370,17 @@ void tst_QDateTime::fromStringStringFormat_data()
     QTest::newRow("ASN.1:UTC-end")
             << u"491231235959Z"_s << u"yyMMddHHmmsst"_s << 1950
             << QDate(2049, 12, 31).endOfDay(QTimeZone::UTC).addMSecs(-999);
+    // Reproducer for QTBUG-129287
+    QTest::newRow("ASN.1:max")
+            << u"99991231235959Z"_s << u"yyyyMMddHHmmsst"_s << 1950
+            << QDate(9999, 12, 31).endOfDay(QTimeZone::UTC).addMSecs(-999);
+    // Can also be reproduced with more legible formats:
+    QTest::newRow("UTC:max")
+            << u"9999 Dec 31 23:59:59 +00:00"_s << u"yyyy MMM dd HH:mm:ss t"_s << 9900
+            << QDate(9999, 12, 31).endOfDay(QTimeZone::UTC).addMSecs(-999);
+    QTest::newRow("UTC:min")
+            << u"0100 Jan 1 00:00:00 +00:00"_s << u"yyyy MMM d HH:mm:ss t"_s << 100
+            << QDate(100, 1, 1).startOfDay(QTimeZone::UTC);
 
     // fuzzer test
     QTest::newRow("integer overflow found by fuzzer")
@@ -3359,9 +3406,20 @@ void tst_QDateTime::fromStringStringFormat()
     QFETCH(int, baseYear);
     QFETCH(QDateTime, expected);
 
-    QDateTime dt = QDateTime::fromString(string, format, baseYear);
+    if (futureTimeType == LocalTimeAheadOfUtc) {
+        // The new parser should remove the bounds, removing this limitation.
+        QEXPECT_FAIL("ASN.1:max", "QTBUG-77948: min/max are local times", Abort);
+        QEXPECT_FAIL("UTC:max", "QTBUG-77948: min/max are local times", Abort);
+    }
+    // For contrast, UTC::min gets away with it, which probably means there are
+    // genuinely out-of-range cases the old parser gets wrong.
 
+    QDateTime dt = QDateTime::fromString(string, format, baseYear);
+#ifdef USING_MS_TZDB
+    QEXPECT_FAIL("spring-forward-midnight", "MS misreads the IANA DB", Continue);
+#endif
     QCOMPARE(dt, expected);
+
     if (expected.isValid()) {
         QCOMPARE(dt.timeSpec(), expected.timeSpec());
         QCOMPARE(dt.timeRepresentation(), dt.timeRepresentation());
@@ -3661,7 +3719,18 @@ void tst_QDateTime::zoneAtTime()
     const QTime noon(12, 0);
 
     QTimeZone zone(ianaID);
+#ifdef USING_MS_TZDB
+    QEXPECT_FAIL("after:NPT", "MS lacks NPT", Abort);
+    QEXPECT_FAIL("before:NPT", "MS lacks NPT", Abort);
+#endif
     QVERIFY(zone.isValid());
+#ifdef GLIBC_TZDB_MISPARSE
+    QEXPECT_FAIL("after:WST", "QTBUG-127598 Bad libstdc++ data", Abort);
+    QEXPECT_FAIL("before:WST", "QTBUG-127598 Bad libstdc++ data", Abort);
+#endif
+#ifdef USING_MS_TZDB
+    QEXPECT_FAIL("after:ACWST", "MS gets ACWST wrong", Abort);
+#endif
     QCOMPARE(QDateTime(date, noon, zone).offsetFromUtc(), offset);
     QCOMPARE(zone.offsetFromUtc(QDateTime(date, noon, zone)), offset);
 #else
@@ -4401,8 +4470,10 @@ void tst_QDateTime::timeZones() const
     // kicked the habit by the end of 2100.
     constexpr int longYear = 1'143'678;
     constexpr qint64 millisInWeek = qint64(7) * 24 * 60 * 60 * 1000;
-    if (QDateTime(QDate(longYear, 3, 24), QTime(12, 0), cet).msecsTo(
-            QDateTime(QDate(longYear, 3, 31), QTime(12, 0), cet)) < millisInWeek) {
+    const QDateTime longYearEarly(QDate(longYear, 3, 24), QTime(12, 0), cet);
+    const QDateTime longYearLate(QDate(longYear, 3, 31), QTime(12, 0), cet);
+    if (longYearEarly.isValid() && longYearLate.isValid()
+            && longYearEarly.msecsTo(longYearLate) < millisInWeek) {
         inGap = QDateTime(QDate(longYear, 3, 27), QTime(2, 30), cet);
         QVERIFY(inGap.isValid());
         QCOMPARE(inGap.date(), QDate(longYear, 3, 27));

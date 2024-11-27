@@ -37,6 +37,7 @@
 // come with sandboxes that kill applications that make system calls outside a
 // whitelist and several Android vendors can't be bothered to update the list.
 #  undef STATX_BASIC_STATS
+#include <private/qjnihelpers_p.h>
 #endif
 
 QT_BEGIN_NAMESPACE
@@ -218,7 +219,8 @@ std::vector<MountInfo> doParseMountInfo(const QByteArray &mountinfo, FilterMount
             continue;
         info.fsType = fields[FsType].toByteArray();
 
-        if (filter == FilterMountInfo::Filtered && !shouldIncludeFs(info.mountPoint, info.fsType))
+        if (filter == FilterMountInfo::Filtered
+                && !QStorageInfoPrivate::shouldIncludeFs(info.mountPoint, info.fsType))
             continue;
 
         std::optional<dev_t> devno = deviceNumber(fields[DevNo]);
@@ -406,10 +408,8 @@ void QStorageInfoPrivate::retrieveVolumeInfo()
     struct statfs64 statfs_buf;
     int result;
     QT_EINTR_LOOP(result, statfs64(QFile::encodeName(rootPath).constData(), &statfs_buf));
-    if (result == 0) {
-        valid = true;
-        ready = true;
-
+    valid = ready = (result == 0);
+    if (valid) {
         bytesTotal = statfs_buf.f_blocks * statfs_buf.f_frsize;
         bytesFree = statfs_buf.f_bfree * statfs_buf.f_frsize;
         bytesAvailable = statfs_buf.f_bavail * statfs_buf.f_frsize;
@@ -432,6 +432,15 @@ static std::vector<MountInfo> parseMountInfo(FilterMountInfo filter = FilterMoun
 
 void QStorageInfoPrivate::doStat()
 {
+#ifdef Q_OS_ANDROID
+    if (QtAndroidPrivate::isUncompressedNativeLibs()) {
+        // We need to pass the actual file path on the file system to statfs64
+        QString possibleApk = QtAndroidPrivate::resolveApkPath(rootPath);
+        if (!possibleApk.isEmpty())
+            rootPath = possibleApk;
+    }
+#endif
+
     retrieveVolumeInfo();
     if (!ready)
         return;

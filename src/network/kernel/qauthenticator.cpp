@@ -1013,45 +1013,6 @@ public:
     enum { Size = 8 };
 };
 
-class QNtlmPhase1BlockBase
-{
-public:
-    char magic[8];
-    quint32 type;
-    quint32 flags;
-    QNtlmBuffer domain;
-    QNtlmBuffer workstation;
-    enum { Size = 32 };
-};
-
-// ################# check paddings
-class QNtlmPhase2BlockBase
-{
-public:
-    char magic[8];
-    quint32 type;
-    QNtlmBuffer targetName;
-    quint32 flags;
-    unsigned char challenge[8];
-    quint32 context[2];
-    QNtlmBuffer targetInfo;
-    enum { Size = 48 };
-};
-
-class QNtlmPhase3BlockBase {
-public:
-    char magic[8];
-    quint32 type;
-    QNtlmBuffer lmResponse;
-    QNtlmBuffer ntlmResponse;
-    QNtlmBuffer domain;
-    QNtlmBuffer user;
-    QNtlmBuffer workstation;
-    QNtlmBuffer sessionKey;
-    quint32 flags;
-    enum { Size = 64 };
-};
-
 static void qStreamNtlmBuffer(QDataStream& ds, const QByteArray& s)
 {
     ds.writeRawData(s.constData(), s.size());
@@ -1104,27 +1065,31 @@ static QDataStream& operator>>(QDataStream& s, QNtlmBuffer& b)
 }
 
 
-class QNtlmPhase1Block : public QNtlmPhase1BlockBase
+class QNtlmPhase1Block
 {  // request
 public:
-    QNtlmPhase1Block() {
-        qstrncpy(magic, "NTLMSSP", 8);
-        type = 1;
-        flags = NTLMSSP_NEGOTIATE_UNICODE | NTLMSSP_NEGOTIATE_NTLM | NTLMSSP_REQUEST_TARGET | NTLMSSP_NEGOTIATE_ALWAYS_SIGN | NTLMSSP_NEGOTIATE_NTLM2;
-    }
+    char magic[8] = {'N', 'T', 'L', 'M', 'S', 'S', 'P', '\0'};
+    quint32 type = 1;
+    quint32 flags = NTLMSSP_NEGOTIATE_UNICODE | NTLMSSP_NEGOTIATE_NTLM | NTLMSSP_REQUEST_TARGET | NTLMSSP_NEGOTIATE_ALWAYS_SIGN | NTLMSSP_NEGOTIATE_NTLM2;
+    QNtlmBuffer domain;
+    QNtlmBuffer workstation;
 
     // extracted
     QString domainStr, workstationStr;
 };
 
 
-class QNtlmPhase2Block : public QNtlmPhase2BlockBase
+class QNtlmPhase2Block
 {  // challenge
 public:
-    QNtlmPhase2Block() {
-        magic[0] = 0;
-        type = 0xffffffff;
-    }
+    char magic[8] = {0};
+    quint32 type = 0xffffffff;
+    QNtlmBuffer targetName;
+    quint32 flags = 0;
+    unsigned char challenge[8] = {'\0'};
+    quint32 context[2] = {0, 0};
+    QNtlmBuffer targetInfo;
+    enum { Size = 48 };
 
     // extracted
     QString targetNameStr, targetInfoStr;
@@ -1133,13 +1098,19 @@ public:
 
 
 
-class QNtlmPhase3Block : public QNtlmPhase3BlockBase {  // response
+class QNtlmPhase3Block
+{  // response
 public:
-    QNtlmPhase3Block() {
-        qstrncpy(magic, "NTLMSSP", 8);
-        type = 3;
-        flags = NTLMSSP_NEGOTIATE_UNICODE | NTLMSSP_NEGOTIATE_NTLM | NTLMSSP_NEGOTIATE_TARGET_INFO;
-    }
+    char magic[8] = {'N', 'T', 'L', 'M', 'S', 'S', 'P', '\0'};
+    quint32 type = 3;
+    QNtlmBuffer lmResponse;
+    QNtlmBuffer ntlmResponse;
+    QNtlmBuffer domain;
+    QNtlmBuffer user;
+    QNtlmBuffer workstation;
+    QNtlmBuffer sessionKey;
+    quint32 flags = NTLMSSP_NEGOTIATE_UNICODE | NTLMSSP_NEGOTIATE_NTLM | NTLMSSP_NEGOTIATE_TARGET_INFO;
+    enum { Size = 64 };
 
     // extracted
     QByteArray lmResponseBuf, ntlmResponseBuf;
@@ -1451,8 +1422,7 @@ static QByteArray qEncodeLmv2Response(const QAuthenticatorPrivate *ctx,
 
 static bool qNtlmDecodePhase2(const QByteArray& data, QNtlmPhase2Block& ch)
 {
-    Q_ASSERT(QNtlmPhase2BlockBase::Size == sizeof(QNtlmPhase2BlockBase));
-    if (data.size() < QNtlmPhase2BlockBase::Size)
+    if (data.size() < QNtlmPhase2Block::Size)
         return false;
 
 
@@ -1519,8 +1489,7 @@ static QByteArray qNtlmPhase3(QAuthenticatorPrivate *ctx, const QByteArray& phas
         pb.flags |= NTLMSSP_NEGOTIATE_OEM;
 
 
-    int offset = QNtlmPhase3BlockBase::Size;
-    Q_ASSERT(QNtlmPhase3BlockBase::Size == sizeof(QNtlmPhase3BlockBase));
+    int offset = QNtlmPhase3Block::Size;
 
     // for kerberos style user@domain logins, NTLM domain string should be left empty
     if (ctx->userDomain.isEmpty() && !ctx->extractedUser.contains(u'@')) {
@@ -1828,3 +1797,5 @@ static bool qGssapiTestGetCredentials(QStringView host)
 #endif // gssapi
 
 QT_END_NAMESPACE
+
+#include "moc_qauthenticator.cpp"

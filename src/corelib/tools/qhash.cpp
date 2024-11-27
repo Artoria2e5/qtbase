@@ -715,7 +715,7 @@ static size_t aeshash(const uchar *p, size_t len, size_t seed, size_t seed2) noe
 }
 #endif // x86 AESNI
 
-#if defined(Q_PROCESSOR_ARM) && QT_COMPILER_SUPPORTS_HERE(AES) && !defined(QHASH_AES_SANITIZER_BUILD) && !defined(QT_BOOTSTRAPPED)
+#if defined(Q_PROCESSOR_ARM) && QT_COMPILER_SUPPORTS_HERE(CRYPTO) && !defined(QHASH_AES_SANITIZER_BUILD) && !defined(QT_BOOTSTRAPPED)
 QT_FUNCTION_TARGET(AES)
 static size_t aeshash(const uchar *p, size_t len, size_t seed, size_t seed2) noexcept
 {
@@ -732,7 +732,7 @@ static size_t aeshash(const uchar *p, size_t len, size_t seed, size_t seed2) noe
 
     // Compared to x86 AES, ARM splits each round into two instructions
     // and includes the pre-xor instead of the post-xor.
-    const auto hash16bytes = [](uint8x16_t &state0, uint8x16_t data) {
+    const auto hash16bytes = [](uint8x16_t &state0, uint8x16_t data) QT_FUNCTION_TARGET(AES) {
         auto state1 = state0;
         state0 = vaeseq_u8(state0, data);
         state0 = vaesmcq_u8(state0);
@@ -864,7 +864,7 @@ size_t qHashBits(const void *p, size_t size, size_t seed) noexcept
 #ifdef AESHASH
     if (seed && qCpuHasFeature(AES) && qCpuHasFeature(SSE4_2))
         return aeshash(data, size, seed, seed2);
-#elif defined(Q_PROCESSOR_ARM) && QT_COMPILER_SUPPORTS_HERE(AES) && !defined(QHASH_AES_SANITIZER_BUILD) && !defined(QT_BOOTSTRAPPED)
+#elif defined(Q_PROCESSOR_ARM) && QT_COMPILER_SUPPORTS_HERE(CRYPTO) && !defined(QHASH_AES_SANITIZER_BUILD) && !defined(QT_BOOTSTRAPPED)
     if (seed && qCpuHasFeature(AES))
         return aeshash(data, size, seed, seed2);
 #endif
@@ -1795,16 +1795,12 @@ size_t qHash(long double key, size_t seed) noexcept
 
 /*! \fn template <class Key, class T> void QHash<Key, T>::swap(QHash &other)
     \since 4.8
-
-    Swaps hash \a other with this hash. This operation is very
-    fast and never fails.
+    \memberswap{hash}
 */
 
 /*! \fn template <class Key, class T> void QMultiHash<Key, T>::swap(QMultiHash &other)
     \since 4.8
-
-    Swaps hash \a other with this hash. This operation is very
-    fast and never fails.
+    \memberswap{multi-hash}
 */
 
 /*! \fn template <class Key, class T> bool QHash<Key, T>::operator==(const QHash &lhs, const QHash &rhs)

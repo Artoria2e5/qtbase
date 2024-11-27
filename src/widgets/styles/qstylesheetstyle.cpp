@@ -111,6 +111,25 @@ public:
     QStyleSheetStylePrivate() { }
 };
 
+class QStyleSheetProxySaver
+{
+public:
+    QStyleSheetProxySaver(const QStyleSheetStyle *that)
+        : m_that(const_cast<QStyleSheetStyle *>(that))
+        , m_oldProxy(const_cast<QStyle *>(that->baseStyle()->proxy()))
+    {
+        m_that->baseStyle()->setProxy(m_that);
+    }
+    ~QStyleSheetProxySaver()
+    {
+        m_that->baseStyle()->setProxy(m_oldProxy);
+    }
+
+private:
+    QStyleSheetStyle *m_that;
+    QStyle *m_oldProxy;
+};
+
 
 static QStyleSheetStyleCaches *styleSheetCaches = nullptr;
 
@@ -593,8 +612,8 @@ public:
         return csz;
     }
 
-    bool hasStyleHint(const QString &sh) const { return styleHints.contains(sh); }
-    QVariant styleHint(const QString &sh) const { return styleHints.value(sh); }
+    bool hasStyleHint(QLatin1StringView sh) const { return styleHints.contains(sh); }
+    QVariant styleHint(QLatin1StringView sh) const { return styleHints.value(sh); }
 
     void fixupBorder(int);
 
@@ -1028,14 +1047,13 @@ QRenderRule::QRenderRule(const QList<Declaration> &declarations, const QObject *
             bool knownStyleHint = false;
             for (const auto sh : knownStyleHints) {
                 QLatin1StringView styleHint(sh);
-                if (decl.d->property.compare(styleHint) == 0) {
-                    QString hintName = QString(styleHint);
+                if (decl.d->property == styleHint) {
                     QVariant hintValue;
-                    if (hintName.endsWith("alignment"_L1)) {
+                    if (styleHint.endsWith("alignment"_L1)) {
                         hintValue = (int) decl.alignmentValue();
-                    } else if (hintName.endsWith("color"_L1)) {
+                    } else if (styleHint.endsWith("color"_L1)) {
                         hintValue = (int) decl.colorValue().rgba();
-                    } else if (hintName.endsWith("size"_L1)) {
+                    } else if (styleHint.endsWith("size"_L1)) {
                         // Check only for the 'em' case
                         const QString valueString = decl.d->values.at(0).variant.toString();
                         const bool isEmSize = valueString.endsWith(u"em", Qt::CaseInsensitive);
@@ -1065,9 +1083,9 @@ QRenderRule::QRenderRule(const QList<Declaration> &declarations, const QObject *
                             // Normal case where we receive a 'px' or 'pt' unit
                             hintValue = decl.sizeValue();
                         }
-                    } else if (hintName.endsWith("icon"_L1)) {
+                    } else if (styleHint.endsWith("icon"_L1)) {
                         hintValue = decl.iconValue();
-                    } else if (hintName == "button-layout"_L1 && decl.d->values.size() != 0
+                    } else if (styleHint == "button-layout"_L1 && decl.d->values.size() != 0
                                && decl.d->values.at(0).type == QCss::Value::String) {
                         hintValue = subControlLayout(decl.d->values.at(0).variant.toString().toLatin1());
                     } else {
@@ -3929,10 +3947,9 @@ void QStyleSheetStyle::drawControl(ControlElement ce, const QStyleOption *opt, Q
                 if (qobject_cast<const QComboBox *>(w))
                     drawCheckMark = false; // ignore the checkmarks provided by the QComboMenuDelegate
 #endif
-                int textRectOffset = 0;
+                int textRectOffset = m->maxIconWidth;
                 if (!mi.icon.isNull()) {
                     renderMenuItemIcon(&mi, p, w, opt->rect, subRule);
-                    textRectOffset = m->maxIconWidth;
                 } else if (drawCheckMark) {
                     const bool checkable = mi.checkType != QStyleOptionMenuItem::NotCheckable;
                     const bool checked = checkable ? mi.checked : false;
@@ -4410,6 +4427,7 @@ void QStyleSheetStyle::drawControl(ControlElement ce, const QStyleOption *opt, Q
                     p->setClipRegion(clipRegion);
                 }
                 subRule.configurePalette(&optCopy.palette, QPalette::Text, QPalette::NoRole);
+                QStyleSheetProxySaver proxySaver(this);
                 baseStyle()->drawControl(ce, &optCopy, p, w);
                 p->restore();
             }
@@ -4851,11 +4869,15 @@ void QStyleSheetStyle::drawPrimitive(PrimitiveElement pe, const QStyleOption *op
         // only indirectly through the background of the item. To get the
         // same background for all parts drawn by QTreeView, we have to
         // use the background rule for the item here.
-        if (renderRule(w, opt, PseudoElement_ViewItem).hasBackground()) {
-            pseudoElement = PseudoElement_ViewItem;
-            // Skip border for the branch and draw only the brackground
-            if (const QStyleOptionViewItem *vopt = qstyleoption_cast<const QStyleOptionViewItem *>(opt)) {
-                QRenderRule rule = renderRule(w, opt, PseudoElement_ViewItem);
+        if (const QStyleOptionViewItem *vopt = qstyleoption_cast<const QStyleOptionViewItem *>(opt)) {
+            // default handling for drawing empty space
+            if (vopt->viewItemPosition == QStyleOptionViewItem::Invalid)
+                break;
+            if (QRenderRule rule = renderRule(w, opt, PseudoElement_ViewItem); rule.hasBackground()) {
+                // if the item background is not fully opaque, then we have to paint the row
+                if (rule.background()->brush.color().alpha() != 1.0)
+                    baseStyle()->drawPrimitive(pe, opt, p, w);
+                // Skip border for the branch and draw only the brackground
                 if (vopt->features & QStyleOptionViewItem::HasDecoration &&
                     (vopt->viewItemPosition == QStyleOptionViewItem::Beginning ||
                      vopt->viewItemPosition == QStyleOptionViewItem::OnlyOne) && rule.hasBorder()) {
@@ -4867,6 +4889,7 @@ void QStyleSheetStyle::drawPrimitive(PrimitiveElement pe, const QStyleOption *op
                     }
                     return;
                 }
+                pseudoElement = PseudoElement_ViewItem;
             }
         }
         break;
@@ -5299,6 +5322,8 @@ QSize QStyleSheetStyle::sizeFromContents(ContentsType ct, const QStyleOption *op
 #if QT_CONFIG(spinbox)
     case CT_SpinBox:
         if (const QStyleOptionSpinBox *spinbox = qstyleoption_cast<const QStyleOptionSpinBox *>(opt)) {
+            if (rule.baseStyleCanDraw())
+                return baseStyle()->sizeFromContents(ct, opt, sz, w);
             if (spinbox->buttonSymbols != QAbstractSpinBox::NoButtons) {
                 // Add some space for the up/down buttons
                 QRenderRule subRule = renderRule(w, opt, PseudoElement_SpinBoxUpButton);
@@ -5637,7 +5662,7 @@ QIcon QStyleSheetStyle::standardIcon(StandardPixmap standardIcon, const QStyleOp
                                      const QWidget *w) const
 {
     RECURSION_GUARD(return baseStyle()->standardIcon(standardIcon, opt, w))
-    QString s = propertyNameForStandardPixmap(standardIcon);
+    const auto s = propertyNameForStandardPixmap(standardIcon);
     if (!s.isEmpty()) {
         QRenderRule rule = renderRule(w, opt);
         if (rule.hasStyleHint(s))
@@ -5655,7 +5680,7 @@ QPixmap QStyleSheetStyle::standardPixmap(StandardPixmap standardPixmap, const QS
                                          const QWidget *w) const
 {
     RECURSION_GUARD(return baseStyle()->standardPixmap(standardPixmap, opt, w))
-    QString s = propertyNameForStandardPixmap(standardPixmap);
+    const auto s = propertyNameForStandardPixmap(standardPixmap);
     if (!s.isEmpty()) {
         QRenderRule rule = renderRule(w, opt);
         if (rule.hasStyleHint(s)) {
@@ -5683,7 +5708,7 @@ int QStyleSheetStyle::styleHint(StyleHint sh, const QStyleOption *opt, const QWi
         return baseStyle()->styleHint(sh, opt, w, shret);
 
     QRenderRule rule = renderRule(w, opt);
-    QString s;
+    QLatin1StringView s;
     switch (sh) {
         case SH_LineEdit_PasswordCharacter: s = "lineedit-password-character"_L1; break;
         case SH_LineEdit_PasswordMaskDelay: s = "lineedit-password-mask-delay"_L1; break;

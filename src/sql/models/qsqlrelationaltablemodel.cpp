@@ -67,8 +67,7 @@ using SqlrTm = QSqlRelationalTableModelSql;
 
 /*!
   \fn void QSqlRelation::swap(QSqlRelation &other)
-
-  Swaps \c this with \a other.
+    \memberswap{relation}
  */
 
 /*!
@@ -105,7 +104,7 @@ struct QRelation
     public:
         Q_DISABLE_COPY(QRelation)   // QRelatedTableModel stores a pointer to this class
         QRelation() = default;
-        void init(QSqlRelationalTableModel *parent, const QSqlRelation &relation);
+        void init(QSqlRelationalTableModel *parent, const QSqlRelation &relation, int column);
 
         void populateModel();
 
@@ -122,6 +121,7 @@ struct QRelation
 
     private:
         QSqlRelationalTableModel *m_parent = nullptr;
+        int col = -1;
         bool m_dictInitialized = false;
 };
 
@@ -139,11 +139,12 @@ private:
     Note: population of the model and dictionary are kept separate
           from initialization, and are populated on an as needed basis.
 */
-void QRelation::init(QSqlRelationalTableModel *parent, const QSqlRelation &relation)
+void QRelation::init(QSqlRelationalTableModel *parent, const QSqlRelation &relation, int column)
 {
     Q_ASSERT(parent != nullptr);
     m_parent = parent;
     rel = relation;
+    col = column;
 }
 
 void QRelation::populateModel()
@@ -156,6 +157,19 @@ void QRelation::populateModel()
         model = new QRelatedTableModel(this, m_parent, m_parent->database());
         model->setTable(rel.tableName());
         model->select();
+        QObject::connect(model, &QAbstractItemModel::dataChanged, model, [&](const QModelIndex &tl, const QModelIndex &br)
+        {
+            if (tl.column() >= col && br.column() <= col)
+                clearDictionary();
+        });
+        QObject::connect(model, &QAbstractItemModel::rowsRemoved, model, [&]()
+        {
+            clearDictionary();
+        });
+        QObject::connect(model, &QAbstractItemModel::rowsInserted, model, [&]()
+        {
+            clearDictionary();
+        });
     }
 }
 
@@ -428,8 +442,9 @@ QVariant QSqlRelationalTableModel::data(const QModelIndex &index, int role) cons
     example, if \a index is out of bounds).
 
     For relational columns, \a value must be the index, not the
-    display value. The index must also exist in the referenced
-    table, otherwise the function returns \c false.
+    display value. If an index is given, it must also exist in the
+    referenced table, otherwise the function returns \c false.
+    If a QVariant() is passed instead of an index, the index is cleared.
 
     \sa editStrategy(), data(), submit(), revertRow()
 */
@@ -442,7 +457,7 @@ bool QSqlRelationalTableModel::setData(const QModelIndex &index, const QVariant 
         auto relation = d->relations.at(index.column());
         if (!relation->isDictionaryInitialized())
             relation->populateDictionary();
-        if (!relation->dictionary.contains(value.toString()))
+        if (value.isValid() && !relation->dictionary.contains(value.toString()))
             return false;
     }
     return QSqlTableModel::setData(index, value, role);
@@ -477,7 +492,7 @@ void QSqlRelationalTableModel::setRelation(int column, const QSqlRelation &relat
         for (auto i = oldSize; i < d->relations.size(); ++i)
             d->relations[i] = QSharedPointer<QRelation>::create();
     }
-    d->relations.at(column)->init(this, relation);
+    d->relations.at(column)->init(this, relation, column);
 }
 
 /*!

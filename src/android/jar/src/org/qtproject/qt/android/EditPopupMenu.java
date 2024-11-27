@@ -5,7 +5,6 @@
 package org.qtproject.qt.android;
 
 import android.app.Activity;
-import android.content.Context;
 import android.graphics.Point;
 import android.util.Log;
 import android.view.View;
@@ -81,6 +80,9 @@ class EditPopupMenu implements ViewTreeObserver.OnPreDrawListener, View.OnLayout
                 parentLayout.requestLayout();
             } catch (ClassCastException e) {
                 Log.w(QtNative.QtTAG, "QtEditText " + m_editText + " parent is not a QtLayout, " +
+                                      "requestLayout() skipped");
+            } catch (NullPointerException e) {
+                Log.w(QtNative.QtTAG, "QtEditText " + m_editText + " does not have a parent, " +
                                       "requestLayout() skipped");
             }
         }

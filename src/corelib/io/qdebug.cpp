@@ -556,9 +556,7 @@ void QDebug::putQtOrdering(QtOrderingPrivate::QtOrderingTypeFlag flags, Qt::part
 /*!
     \fn QDebug::swap(QDebug &other)
     \since 5.0
-
-    Swaps this debug stream instance with \a other. This function is
-    very fast and never fails.
+    \memberswap{debug stream instance}
 */
 
 /*!
@@ -1087,6 +1085,33 @@ QByteArray QDebug::toBytesImpl(StreamTypeErased s, const void *obj)
 }
 
 /*!
+    \internal
+    \since 6.9
+
+    Outputs a heterogeneous product type (pair, tuple, or anything that
+    implements the Tuple Protocol). The class name is described by "\a ns
+    \c{::} \a what", while the addresses of the \a n elements are stored in the
+    array \a data. The formatters are stored in the array \a ops.
+
+    If \a ns is empty, only \a what is used.
+*/
+QDebug &QDebug::putTupleLikeImplImpl(const char *ns, const char *what,
+                                     size_t n, StreamTypeErased *ops, const void **data)
+{
+    const QDebugStateSaver saver(*this);
+    nospace();
+    if (ns && *ns)
+        *this << ns << "::";
+    *this << what << '(';
+    while (n--) {
+        (*ops++)(*this, *data++);
+        if (n)
+            *this << ", ";
+    }
+    return *this << ')';
+}
+
+/*!
     \fn template <class T> QDebug operator<<(QDebug debug, const QList<T> &list)
     \relates QDebug
 
@@ -1164,6 +1189,43 @@ QByteArray QDebug::toBytesImpl(StreamTypeErased s, const void *obj)
 */
 
 /*!
+    \fn template <typename Key, typename Compare, typename Alloc> QDebug operator<<(QDebug debug, const std::multiset<Key, Compare, Alloc> &multiset)
+    \relates QDebug
+    \since 6.9
+
+    Writes the contents of \a multiset to \a debug. The \c Key type
+    needs to support streaming into QDebug.
+*/
+
+/*!
+    \fn template <typename Key, typename Compare, typename Alloc> QDebug operator<<(QDebug debug, const std::set<Key, Compare, Alloc> &set)
+    \relates QDebug
+    \since 6.9
+
+    Writes the contents of \a set to \a debug. The \c Key type
+    needs to support streaming into QDebug.
+*/
+
+/*!
+    \fn template <typename Key, typename T, typename Hash, typename KeyEqual, typename Alloc> QDebug operator<<(QDebug debug, const std::unordered_map<Key, T, Compare, Alloc> &unordered_map)
+    \relates QDebug
+    \since 6.9
+
+ Writes the contents of \a map to \a debug. Both \c Key and
+ \c T need to support streaming into QDebug.
+*/
+
+/*!
+    \fn template <typename Key, typename Hash, typename KeyEqual, typename Alloc> QDebug operator<<(QDebug debug, const std::unordered_set<Key, Hash, KeyEqual, Alloc> &unordered_set)
+    \relates QDebug
+    \since 6.9
+
+Writes the contents of \a unordered_set to \a debug. The \c Key type
+needs to support streaming into QDebug.
+*/
+
+
+/*!
     \fn template <class Key, class T> QDebug operator<<(QDebug debug, const QHash<Key, T> &hash)
     \relates QDebug
 
@@ -1177,6 +1239,14 @@ QByteArray QDebug::toBytesImpl(StreamTypeErased s, const void *obj)
 
     Writes the contents of \a hash to \a debug. Both \c Key and
     \c T need to support streaming into QDebug.
+*/
+
+/*!
+    \fn template <class...Ts, QDebug::if_streamable<Ts...>> QDebug &QDebug::operator<<(const std::tuple<Ts...> &tuple)
+    \since 6.9
+
+    Writes the contents of \a tuple to the stream. All \c Ts... need to support
+    streaming into QDebug.
 */
 
 /*!
@@ -1329,8 +1399,18 @@ QDebugStateSaver::~QDebugStateSaver()
 */
 void qt_QMetaEnum_flagDebugOperator(QDebug &debug, size_t sizeofT, uint value)
 {
-    qt_QMetaEnum_flagDebugOperator<uint>(debug, sizeofT, value);
+    qt_QMetaEnum_flagDebugOperator(debug, sizeofT, quint64(value));
 }
+
+/*!
+    \internal
+    Ditto, for 64-bit.
+*/
+void qt_QMetaEnum_flagDebugOperator(QDebug &debug, size_t sizeofT, quint64 value)
+{
+    qt_QMetaEnum_flagDebugOperator<quint64>(debug, sizeofT, value);
+}
+
 
 #ifndef QT_NO_QOBJECT
 /*!
@@ -1449,7 +1529,7 @@ QDebug qt_QMetaEnum_flagDebugOperator(QDebug &debug, quint64 value, const QMetaO
         debug << '(';
     }
 
-    debug << me.valueToKeys(static_cast<int>(value));
+    debug << me.valueToKeys(value);
 
     if (enumScope)
         debug << ')';

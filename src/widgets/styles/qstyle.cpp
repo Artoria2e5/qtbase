@@ -7,8 +7,10 @@
 #include "qwidget.h"
 #include "qbitmap.h"
 #include "qpixmapcache.h"
+#include "qset.h"
 #include "qstyleoption.h"
 #include "private/qstyle_p.h"
+#include "private/qstylehelper_p.h"
 #include "private/qguiapplication_p.h"
 #include <qpa/qplatformtheme.h>
 #ifndef QT_NO_DEBUG
@@ -1833,7 +1835,7 @@ void QStyle::drawItemPixmap(QPainter *painter, const QRect &rect, int alignment,
     message box should be centered or not (see QDialogButtonBox::setCentered()).
 
     \value SH_MessageBox_TextInteractionFlags A boolean indicating if
-    the text in a message box should allow user interfactions (e.g.
+    the text in a message box should allow user interactions (e.g.
     selection) or not.
 
     \value SH_TitleBar_AutoRaise A boolean indicating whether
@@ -2420,6 +2422,53 @@ bool QStylePrivate::useFullScreenForPopup()
 {
     auto theme = QGuiApplicationPrivate::platformTheme();
     return theme && theme->themeHint(QPlatformTheme::UseFullScreenForPopupMenu).toBool();
+}
+
+//
+// QCachedPainter
+QSet<QString> QCachedPainter::s_pixmapCacheKeys;
+QCachedPainter::QCachedPainter(QPainter *painter, const QString &cachePrefix,
+                               const QStyleOption *option, QSize size, QRect paintRect)
+    : m_painter(painter)
+    , m_option(option)
+    , m_paintRect(paintRect)
+{
+    const auto sz = size.isEmpty() ? option->rect.size() : size;
+    const qreal dpr = QStyleHelper::getDpr(painter);
+    m_pixmapName = QStyleHelper::uniqueName(cachePrefix, option, sz, dpr);
+    m_alreadyCached = QPixmapCache::find(m_pixmapName, &m_pixmap);
+    if (!m_alreadyCached) {
+        m_pixmap = styleCachePixmap(sz, dpr);
+        m_pixmapPainter = std::make_unique<QPainter>(&m_pixmap);
+        m_pixmapPainter->setRenderHints(painter->renderHints());
+        s_pixmapCacheKeys += m_pixmapName;
+    }
+}
+
+QCachedPainter::~QCachedPainter()
+{
+    finish();
+    if (!m_alreadyCached)
+        QPixmapCache::insert(m_pixmapName, m_pixmap);
+}
+
+void QCachedPainter::finish()
+{
+    m_pixmapPainter.reset();
+    if (!m_pixmapDrawn) {
+        m_pixmapDrawn = true;
+        if (m_paintRect.isNull())
+            m_painter->drawPixmap(m_option->rect.topLeft(), m_pixmap);
+        else
+            m_painter->drawPixmap(m_paintRect, m_pixmap);
+    }
+}
+
+void QCachedPainter::cleanupPixmapCache()
+{
+    for (const auto &key : s_pixmapCacheKeys)
+        QPixmapCache::remove(key);
+    s_pixmapCacheKeys.clear();
 }
 
 QT_END_NAMESPACE

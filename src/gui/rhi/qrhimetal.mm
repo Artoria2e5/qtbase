@@ -610,7 +610,7 @@ bool QRhiMetal::create(QRhi::Flags flags)
     const QString label = QString::asprintf("Qt capture scope for QRhi %p", this);
     d->captureScope.label = label.toNSString();
 
-#if defined(Q_OS_MACOS)
+#if defined(Q_OS_MACOS) || defined(Q_OS_VISIONOS)
     caps.maxTextureSize = 16384;
     caps.baseVertexAndInstance = true;
     caps.isAppleGPU = [d->dev supportsFamily:MTLGPUFamilyApple7];
@@ -867,6 +867,8 @@ bool QRhiMetal::isFeatureSupported(QRhi::Feature feature) const
         return caps.shadingRateMap;
     case QRhi::VariableRateShadingMapWithTexture:
         return false;
+    case QRhi::PerRenderTargetBlending:
+        return true;
     default:
         Q_UNREACHABLE();
         return false;
@@ -933,6 +935,11 @@ bool QRhiMetal::makeThreadLocalNativeContextCurrent()
 {
     // not applicable
     return false;
+}
+
+void QRhiMetal::setQueueSubmitParams(QRhiNativeHandles *)
+{
+    // not applicable
 }
 
 void QRhiMetal::releaseCachedResources()
@@ -1855,7 +1862,21 @@ void QRhiMetal::setViewport(QRhiCommandBuffer *cb, const QRhiViewport &viewport)
 {
     QMetalCommandBuffer *cbD = QRHI_RES(QMetalCommandBuffer, cb);
     Q_ASSERT(cbD->recordingPass == QMetalCommandBuffer::RenderPass);
-    const QSize outputSize = cbD->currentTarget->pixelSize();
+    QSize outputSize = cbD->currentTarget->pixelSize();
+
+    // If we have a shading rate map check and use the output size as given by the "screenSize"
+    // call. This is important for the viewport to be correct when using a shading rate map, as
+    // the pixel size of the target will likely be smaller then what will be rendered to the output.
+    // This is specifically needed for visionOS.
+    if (cbD->currentTarget->resourceType() == QRhiResource::TextureRenderTarget) {
+        QRhiTextureRenderTarget *rt = static_cast<QRhiTextureRenderTarget *>(cbD->currentTarget);
+        if (QRhiShadingRateMap *srm = rt->description().shadingRateMap()) {
+            if (id<MTLRasterizationRateMap> rateMap = QRHI_RES(QMetalShadingRateMap, srm)->d->rateMap) {
+                auto screenSize = [rateMap screenSize];
+                outputSize = QSize(screenSize.width, screenSize.height);
+            }
+        }
+    }
 
     // x,y is top-left in MTLViewportRect but bottom-left in QRhiViewport
     float x, y, w, h;
@@ -3484,6 +3505,13 @@ static inline MTLPixelFormat toMetalTextureFormat(QRhiTexture::Format format, QR
 
     case QRhiTexture::RGB10A2:
         return MTLPixelFormatRGB10A2Unorm;
+
+    case QRhiTexture::R32UI:
+        return MTLPixelFormatR32Uint;
+    case QRhiTexture::RG32UI:
+        return MTLPixelFormatRG32Uint;
+    case QRhiTexture::RGBA32UI:
+        return MTLPixelFormatRGBA32Uint;
 
 #ifdef Q_OS_MACOS
     case QRhiTexture::D16:

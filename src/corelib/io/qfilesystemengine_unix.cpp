@@ -36,6 +36,11 @@
 # define _PATH_TMP          "/tmp"
 #endif
 
+#if __has_include(<sys/disk.h>)
+// BSDs (including Apple Darwin)
+# include <sys/disk.h>
+#endif
+
 #if defined(Q_OS_DARWIN)
 # include <QtCore/private/qcore_mac_p.h>
 # include <CoreFoundation/CFBundle.h>
@@ -79,6 +84,15 @@ struct statx { mode_t stx_mode; };      // dummy
 QT_BEGIN_NAMESPACE
 
 using namespace Qt::StringLiterals;
+
+static QByteArray &removeTrailingSlashes(QByteArray &path)
+{
+    // Darwin doesn't support trailing /'s, so remove for everyone
+    while (path.size() > 1 && path.endsWith('/'))
+        path.chop(1);
+
+    return path;
+}
 
 enum {
 #ifdef Q_OS_ANDROID
@@ -362,6 +376,33 @@ inline void QFileSystemMetaData::fillFromStatxBuf(const struct statx &)
 //static
 bool QFileSystemEngine::fillMetaData(int fd, QFileSystemMetaData &data)
 {
+    auto getSizeForBlockDev = [&](mode_t st_mode) {
+#ifdef BLKGETSIZE64
+        // Linux
+        if (quint64 sz; (st_mode & S_IFMT) == S_IFBLK && ioctl(fd, BLKGETSIZE64, &sz) == 0)
+            data.size_ = sz;        // returns byte count
+#elif defined(BLKGETSIZE)
+        // older Linux
+        if (ulong sz; (st_mode & S_IFMT) == S_IFBLK && ioctl(fd, BLKGETSIZE, &sz) == 0)
+            data.size_ = sz * 512;  // returns 512-byte sector count
+#elif defined(DKIOCGETBLOCKCOUNT)
+        // Apple Darwin
+        qint32 blksz;
+        if (quint64 count; (st_mode & S_IFMT) == S_IFBLK
+                && ioctl(fd, DKIOCGETBLOCKCOUNT, &count) == 0
+                && ioctl(fd, DKIOCGETBLOCKSIZE, &blksz) == 0)
+            data.size_ = count * blksz;
+#elif defined(DIOCGMEDIASIZE)
+        // FreeBSD
+        // see Linux-compat implementation in
+        // http://fxr.watson.org/fxr/source/compat/linux/linux_ioctl.c?v=FREEBSD-13-STABLE#L282
+        // S_IFCHR is correct: FreeBSD doesn't have block devices any more
+        if (QT_OFF_T sz; (st_mode & S_IFMT) == S_IFCHR && ioctl(fd, DIOCGMEDIASIZE, &sz) == 0)
+            data.size_ = sz;        // returns byte count
+#else
+        Q_UNUSED(st_mode);
+#endif
+    };
     data.entryFlags &= ~QFileSystemMetaData::PosixStatFlags;
     data.knownFlagsMask |= QFileSystemMetaData::PosixStatFlags;
 
@@ -371,6 +412,7 @@ bool QFileSystemEngine::fillMetaData(int fd, QFileSystemMetaData &data)
     if (ret != -ENOSYS) {
         if (ret == 0) {
             data.fillFromStatxBuf(statxBuffer);
+            getSizeForBlockDev(statxBuffer.stx_mode);
             return true;
         }
         return false;
@@ -380,6 +422,7 @@ bool QFileSystemEngine::fillMetaData(int fd, QFileSystemMetaData &data)
 
     if (QT_FSTAT(fd, &statBuffer) == 0) {
         data.fillFromStatBuf(statBuffer);
+        getSizeForBlockDev(statBuffer.st_mode);
         return true;
     }
 
@@ -840,7 +883,7 @@ bool QFileSystemEngine::fillMetaData(const QFileSystemEntry &entry, QFileSystemM
     Q_CHECK_FILE_NAME(entry, false);
 
 #if defined(Q_OS_DARWIN)
-    if (what & QFileSystemMetaData::BundleType) {
+    if (what & (QFileSystemMetaData::BundleType | QFileSystemMetaData::CaseSensitive)) {
         if (!data.hasFlags(QFileSystemMetaData::DirectoryType))
             what |= QFileSystemMetaData::DirectoryType;
     }
@@ -995,6 +1038,13 @@ bool QFileSystemEngine::fillMetaData(const QFileSystemEntry &entry, QFileSystemM
 
         data.knownFlagsMask |= QFileSystemMetaData::BundleType;
     }
+
+    if (what & QFileSystemMetaData::CaseSensitive) {
+        if (entryErrno == 0 && hasResourcePropertyFlag(
+            data, entry, kCFURLVolumeSupportsCaseSensitiveNamesKey))
+            data.entryFlags |= QFileSystemMetaData::CaseSensitive;
+        data.knownFlagsMask |= QFileSystemMetaData::CaseSensitive;
+    }
 #endif
 
     if (what & QFileSystemMetaData::HiddenAttribute
@@ -1073,99 +1123,109 @@ bool QFileSystemEngine::cloneFile(int srcfd, int dstfd, const QFileSystemMetaDat
 #endif
 }
 
-// Note: if \a shouldMkdirFirst is false, we assume the caller did try to mkdir
-// before calling this function.
-static bool createDirectoryWithParents(const QByteArray &nativeName, mode_t mode,
-                                       bool shouldMkdirFirst = true)
+static QSystemError createDirectoryWithParents(const QByteArray &path, mode_t mode)
 {
-    // helper function to check if a given path is a directory, since mkdir can
-    // fail if the dir already exists (it may have been created by another
-    // thread or another process)
-    const auto isDir = [](const QByteArray &nativeName) {
-        QT_STATBUF st;
-        return QT_STAT(nativeName.constData(), &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR;
+#ifdef Q_OS_WASM
+    if (path == '/')
+        return {};
+#endif
+
+    auto tryMkDir = [&path, mode]() -> QSystemError {
+        if (QT_MKDIR(path, mode) == 0) {
+#ifdef Q_OS_VXWORKS
+            forceRequestedPermissionsOnVxWorks(path, mode);
+#endif
+            return {};
+        }
+        // On macOS with APFS mkdir sets errno to EISDIR, QTBUG-97110
+        if (errno == EISDIR)
+            return {};
+        if (errno == EEXIST || errno == EROFS) {
+            // ::mkdir() can fail if the dir already exists (it may have been
+            // created by another thread or another process)
+            QT_STATBUF st;
+            if (QT_STAT(path.constData(), &st) != 0)
+                return QSystemError::stdError(errno);
+            const bool isDir = (st.st_mode & S_IFMT) == S_IFDIR;
+            return isDir ? QSystemError{} : QSystemError::stdError(EEXIST);
+        }
+        return QSystemError::stdError(errno);
     };
 
-    if (shouldMkdirFirst && QT_MKDIR(nativeName, mode) == 0) {
-#ifdef Q_OS_VXWORKS
-        forceRequestedPermissionsOnVxWorks(nativeName, mode);
-#endif
-        return true;
-    }
-    if (errno == EISDIR)
-        return true;
-    if (errno == EEXIST || errno == EROFS)
-        return isDir(nativeName);
-    if (errno != ENOENT)
-        return false;
+    QSystemError result = tryMkDir();
+    if (result.ok())
+        return result;
+
+    // Only handle non-existing dir components in the path
+    if (result.errorCode != ENOENT)
+        return result;
+
+    qsizetype slash = path.lastIndexOf('/');
+    while (slash > 0 && path[slash - 1] == '/')
+        --slash;
+
+    if (slash < 1)
+        return result;
 
     // mkdir failed because the parent dir doesn't exist, so try to create it
-    qsizetype slash = nativeName.lastIndexOf('/');
-    if (slash < 1)
-        return false;
-
-    QByteArray parentNativeName = nativeName.left(slash);
-    if (!createDirectoryWithParents(parentNativeName, mode))
-        return false;
+    QByteArray parentPath = path.first(slash);
+    if (result = createDirectoryWithParents(parentPath, mode); !result.ok())
+        return result;
 
     // try again
-    if (QT_MKDIR(nativeName, mode) == 0) {
-#ifdef Q_OS_VXWORKS
-        forceRequestedPermissionsOnVxWorks(nativeName, mode);
-#endif
-        return true;
-    }
-    return errno == EEXIST && isDir(nativeName);
+    return tryMkDir();
 }
 
-//static
-bool QFileSystemEngine::createDirectory(const QFileSystemEntry &entry, bool createParents,
-                                        std::optional<QFile::Permissions> permissions)
+bool QFileSystemEngine::mkpath(const QFileSystemEntry &entry,
+                              std::optional<QFile::Permissions> permissions)
 {
-    QByteArray dirName = entry.nativeFilePath();
-    Q_CHECK_FILE_NAME(dirName, false);
+    QByteArray path = entry.nativeFilePath();
+    Q_CHECK_FILE_NAME(path, false);
 
-    // Darwin doesn't support trailing /'s, so remove for everyone
-    while (dirName.size() > 1 && dirName.endsWith(u'/'))
-        dirName.chop(1);
-
-    // try to mkdir this directory
     mode_t mode = permissions ? QtPrivate::toMode_t(*permissions) : 0777;
-    if (QT_MKDIR(dirName, mode) == 0) {
-#ifdef Q_OS_VXWORKS
-        forceRequestedPermissionsOnVxWorks(dirName, mode);
-#endif
-        return true;
-    }
-    if (!createParents)
-        return false;
-
-    return createDirectoryWithParents(dirName, mode, false);
+    return createDirectoryWithParents(removeTrailingSlashes(path), mode).ok();
 }
 
-//static
-bool QFileSystemEngine::removeDirectory(const QFileSystemEntry &entry, bool removeEmptyParents)
+bool QFileSystemEngine::mkdir(const QFileSystemEntry &entry,
+                              std::optional<QFile::Permissions> permissions)
 {
-    Q_CHECK_FILE_NAME(entry, false);
+    QByteArray path = entry.nativeFilePath();
+    Q_CHECK_FILE_NAME(path, false);
 
-    if (removeEmptyParents) {
-        QString dirName = QDir::cleanPath(entry.filePath());
-        for (qsizetype oldslash = 0, slash=dirName.size(); slash > 0; oldslash = slash) {
-            const QByteArray chunk = QFile::encodeName(dirName.left(slash));
-            QT_STATBUF st;
-            if (QT_STAT(chunk.constData(), &st) != -1) {
-                if ((st.st_mode & S_IFMT) != S_IFDIR)
-                    return false;
-                if (::rmdir(chunk.constData()) != 0)
-                    return oldslash != 0;
-            } else {
-                return false;
-            }
-            slash = dirName.lastIndexOf(QDir::separator(), oldslash-1);
-        }
-        return true;
+    mode_t mode = permissions ? QtPrivate::toMode_t(*permissions) : 0777;
+    auto result = QT_MKDIR(removeTrailingSlashes(path), mode) == 0;
+#if defined(Q_OS_VXWORKS)
+    if (result)
+        forceRequestedPermissionsOnVxWorks(path, mode);
+#endif
+    return result;
+}
+
+bool QFileSystemEngine::rmdir(const QFileSystemEntry &entry)
+{
+    const QByteArray path = entry.nativeFilePath();
+    Q_CHECK_FILE_NAME(path, false);
+    return ::rmdir(path.constData()) == 0;
+}
+
+bool QFileSystemEngine::rmpath(const QFileSystemEntry &entry)
+{
+    QByteArray path = QFile::encodeName(QDir::cleanPath(entry.filePath()));
+    Q_CHECK_FILE_NAME(path, false);
+
+    if (::rmdir(path.constData()) != 0)
+        return false; // Only return false if `entry` couldn't be deleted
+
+    const char sep = QDir::separator().toLatin1();
+    qsizetype slash = path.lastIndexOf(sep);
+    // `slash > 0` because truncate(0) would make `path` empty
+    for (; slash > 0; slash = path.lastIndexOf(sep)) {
+        path.truncate(slash);
+        if (::rmdir(path.constData()) != 0)
+            break;
     }
-    return rmdir(QFile::encodeName(entry.filePath()).constData()) == 0;
+
+    return true;
 }
 
 //static
@@ -1182,7 +1242,7 @@ bool QFileSystemEngine::createLink(const QFileSystemEntry &source, const QFileSy
 
 #ifdef Q_OS_DARWIN
 // see qfilesystemengine_mac.mm
-#elif defined(QT_BOOTSTRAPPED) || !defined(AT_FDCWD) || defined(Q_OS_ANDROID)
+#elif defined(QT_BOOTSTRAPPED) || !defined(AT_FDCWD) || defined(Q_OS_ANDROID) || !QT_CONFIG(datestring) || defined(Q_OS_VXWORKS)
 // bootstrapped tools don't need this, and we don't want QStorageInfo
 //static
 bool QFileSystemEngine::supportsMoveFileToTrash()
@@ -1552,7 +1612,7 @@ bool QFileSystemEngine::moveFileToTrash(const QFileSystemEntry &source,
     newLocation = QFileSystemEntry(op.trashPath + "/files/"_L1 + uniqueTrashedName);
     return true;
 }
-#endif // !Q_OS_DARWIN && !QT_BOOTSTRAPPED
+#endif // !Q_OS_DARWIN && (!QT_BOOTSTRAPPED && AT_FDCWD && !Q_OS_ANDROID && QT_CONFIG(datestring))
 
 //static
 bool QFileSystemEngine::copyFile(const QFileSystemEntry &source, const QFileSystemEntry &target, QSystemError &error)
@@ -1667,33 +1727,23 @@ bool QFileSystemEngine::removeFile(const QFileSystemEntry &entry, QSystemError &
 }
 
 //static
-bool QFileSystemEngine::setPermissions(const QFileSystemEntry &entry, QFile::Permissions permissions, QSystemError &error, QFileSystemMetaData *data)
+bool QFileSystemEngine::setPermissions(const QFileSystemEntry &entry,
+                                       QFile::Permissions permissions, QSystemError &error)
 {
     Q_CHECK_FILE_NAME(entry, false);
 
     mode_t mode = QtPrivate::toMode_t(permissions);
     bool success = ::chmod(entry.nativeFilePath().constData(), mode) == 0;
-    if (success && data) {
-        data->entryFlags &= ~QFileSystemMetaData::Permissions;
-        data->entryFlags |= QFileSystemMetaData::MetaDataFlag(uint(permissions.toInt()));
-        data->knownFlagsMask |= QFileSystemMetaData::Permissions;
-    }
     if (!success)
         error = QSystemError(errno, QSystemError::StandardLibraryError);
     return success;
 }
 
 //static
-bool QFileSystemEngine::setPermissions(int fd, QFile::Permissions permissions, QSystemError &error, QFileSystemMetaData *data)
+bool QFileSystemEngine::setPermissions(int fd, QFile::Permissions permissions, QSystemError &error)
 {
     mode_t mode = QtPrivate::toMode_t(permissions);
-
     bool success = ::fchmod(fd, mode) == 0;
-    if (success && data) {
-        data->entryFlags &= ~QFileSystemMetaData::Permissions;
-        data->entryFlags |= QFileSystemMetaData::MetaDataFlag(uint(permissions.toInt()));
-        data->knownFlagsMask |= QFileSystemMetaData::Permissions;
-    }
     if (!success)
         error = QSystemError(errno, QSystemError::StandardLibraryError);
     return success;
@@ -1799,4 +1849,19 @@ QFileSystemEntry QFileSystemEngine::currentPath()
 #endif
     return result;
 }
+
+bool QFileSystemEngine::isCaseSensitive(const QFileSystemEntry &entry, QFileSystemMetaData &metaData)
+{
+#if defined(Q_OS_DARWIN)
+    if (!metaData.hasFlags(QFileSystemMetaData::CaseSensitive))
+        fillMetaData(entry, metaData, QFileSystemMetaData::CaseSensitive);
+    return metaData.entryFlags.testFlag(QFileSystemMetaData::CaseSensitive);
+#else
+    Q_UNUSED(entry);
+    Q_UNUSED(metaData);
+    // FIXME: This may not be accurate for all file systems (QTBUG-28246)
+    return true;
+#endif
+}
+
 QT_END_NAMESPACE

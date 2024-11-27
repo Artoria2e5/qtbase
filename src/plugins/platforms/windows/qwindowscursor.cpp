@@ -523,6 +523,7 @@ CursorHandlePtr QWindowsCursor::standardWindowCursor(Qt::CursorShape shape)
 
 HCURSOR QWindowsCursor::m_overriddenCursor = nullptr;
 HCURSOR QWindowsCursor::m_overrideCursor = nullptr;
+POINT QWindowsCursor::m_cursorPositionCache = {0,0};
 
 /*!
     \brief Return cached pixmap cursor or create new one.
@@ -633,8 +634,9 @@ void QWindowsCursor::clearOverrideCursor()
 QPoint QWindowsCursor::mousePosition()
 {
     POINT p;
-    GetCursorPos(&p);
-    return QPoint(p.x, p.y);
+    if (GetCursorPos(&p))
+        m_cursorPositionCache = p;
+    return QPoint(m_cursorPositionCache.x, m_cursorPositionCache.y);
 }
 
 QWindowsCursor::State QWindowsCursor::cursorState()
@@ -658,6 +660,7 @@ QPoint QWindowsCursor::pos() const
 
 void QWindowsCursor::setPos(const QPoint &pos)
 {
+    m_cursorPositionCache = {pos.x(), pos.y()};
     SetCursorPos(pos.x() , pos.y());
 }
 
@@ -668,16 +671,16 @@ void QWindowsCursor::setPos(const QPoint &pos)
 */
 QSize QWindowsCursor::size() const
 {
-    const QPair<DWORD,bool> cursorSizeSetting =
+    const auto cursorSizeSetting =
         QWinRegistryKey(HKEY_CURRENT_USER, LR"(Control Panel\Cursors)")
-                       .dwordValue(L"CursorBaseSize");
+                       .value<DWORD>(L"CursorBaseSize");
     const int baseSize = screenCursorSize(m_screen).width() / 2;
-    if (!cursorSizeSetting.second)
+    if (!cursorSizeSetting)
         return QSize(baseSize / 2, baseSize / 2);
 
     // The registry values are dpi-independent, so we need to scale the result.
-    int cursorSizeValue = cursorSizeSetting.first * m_screen->logicalDpi().first
-                                                  / m_screen->logicalBaseDpi().first;
+    int cursorSizeValue = *cursorSizeSetting * m_screen->logicalDpi().first
+                                             / m_screen->logicalBaseDpi().first;
 
     // map from registry value 32-256 to 0-14, and from there to pixels
     cursorSizeValue = (cursorSizeValue - 2 * baseSize) / baseSize;

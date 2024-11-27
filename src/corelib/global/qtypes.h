@@ -12,6 +12,9 @@
 
 #ifdef __cplusplus
 #  include <cstddef>
+#  if defined(_HAS_STD_BYTE) && _HAS_STD_BYTE == 0
+#    error "Qt requires std::byte, but _HAS_STD_BYTE has been set to 0"
+#  endif
 #  include <cstdint>
 #  if defined(__STDCPP_FLOAT16_T__) && __has_include(<stdfloat>)
 // P1467 implementation - https://wg21.link/p1467
@@ -71,6 +74,9 @@ typedef quint64 qulonglong;
 #  define QT_SUPPORTS_INT128 QT_COMPILER_SUPPORTS_INT128
 #  if defined(__GLIBCXX__) && defined(__STRICT_ANSI__) // -ansi/-std=c++NN instead of gnu++NN
 #    undef QT_SUPPORTS_INT128                          // breaks <type_traits> on libstdc++
+#  endif
+#  if defined(__clang__) && defined(_MSVC_STL_VERSION) // Clang with MSVC's STL
+#    undef QT_SUPPORTS_INT128                          // MSVC's STL doesn't support int128
 #  endif
 #else
 #  undef QT_SUPPORTS_INT128

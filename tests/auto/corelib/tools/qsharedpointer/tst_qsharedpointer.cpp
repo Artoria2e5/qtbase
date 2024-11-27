@@ -60,6 +60,7 @@ private slots:
     void weakQObjectFromSharedPointer();
     void objectCast();
     void objectCastStdSharedPtr();
+    void objectCastFailureNoLeak();
     void differentPointers();
     void virtualBaseDifferentPointers();
     void virtualBaseWeakPointerConversions();
@@ -1040,6 +1041,11 @@ void tst_QSharedPointer::objectCast()
         // again:
         ptr = qobject_cast<QSharedPointer<OtherObject> >(baseptr);
         QVERIFY(ptr == data);
+
+        // again:
+        ptr = qobject_cast<OtherObject *>(std::move(baseptr));
+        QVERIFY(ptr == data);
+        QVERIFY(!baseptr);
     }
     safetyCheck();
 
@@ -1066,6 +1072,11 @@ void tst_QSharedPointer::objectCast()
         // again:
         ptr = qobject_cast<QSharedPointer<const OtherObject> >(baseptr);
         QVERIFY(ptr == data);
+
+        // again:
+        ptr = qobject_cast<const OtherObject *>(std::move(baseptr));
+        QVERIFY(ptr == data);
+        QVERIFY(!baseptr);
     }
     safetyCheck();
 
@@ -1109,6 +1120,23 @@ void tst_QSharedPointer::objectCast()
     safetyCheck();
 }
 
+void tst_QSharedPointer::objectCastFailureNoLeak()
+{
+    // verify that a failing object cast doesn't keep the original object alive
+    auto ptr = QSharedPointer<QObject>::create();
+    auto qptr = QPointer(ptr.data());
+    auto ptr2 = ptr.objectCast<tst_QSharedPointer>();
+    auto ptr3 = std::move(ptr).objectCast<tst_QSharedPointer>();
+
+    QVERIFY(ptr);
+    QVERIFY(qptr);
+    QVERIFY(!ptr2);
+    QVERIFY(!ptr3);
+
+    ptr.reset();
+    QVERIFY(!ptr);
+    QVERIFY(!qptr);
+}
 
 void tst_QSharedPointer::objectCastStdSharedPtr()
 {
@@ -1389,6 +1417,12 @@ void tst_QSharedPointer::dynamicCast()
     }
     QCOMPARE(int(refCountData(baseptr)->weakref.loadRelaxed()), 1);
     QCOMPARE(int(refCountData(baseptr)->strongref.loadRelaxed()), 1);
+
+    {
+        QSharedPointer<DerivedData> derivedptr = std::move(baseptr).dynamicCast<DerivedData>();
+        QCOMPARE(derivedptr.data(), aData);
+    }
+    QVERIFY(!baseptr);
 }
 
 void tst_QSharedPointer::dynamicCastDifferentPointers()
@@ -1435,6 +1469,12 @@ void tst_QSharedPointer::dynamicCastDifferentPointers()
         QCOMPARE(otherbaseptr.data(), nakedptr);
         QCOMPARE(static_cast<DiffPtrDerivedData*>(otherbaseptr.data()), aData);
     }
+
+    {
+        QSharedPointer<DiffPtrDerivedData> derivedptr = std::move(baseptr).dynamicCast<DiffPtrDerivedData>();
+        QCOMPARE(derivedptr.data(), aData);
+    }
+    QVERIFY(!baseptr);
 }
 
 void tst_QSharedPointer::dynamicCastVirtualBase()

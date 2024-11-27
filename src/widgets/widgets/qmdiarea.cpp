@@ -650,9 +650,7 @@ QMdiAreaPrivate::QMdiAreaPrivate()
       indexToNextWindow(-1),
       indexToPreviousWindow(-1),
       indexToHighlighted(-1),
-      indexToLastActiveTab(-1),
-      resizeTimerId(-1),
-      tabToPreviousTimerId(-1)
+      indexToLastActiveTab(-1)
 {
 }
 
@@ -982,7 +980,7 @@ void QMdiAreaPrivate::activateHighlightedWindow()
         return;
 
     Q_ASSERT(indexToHighlighted < childWindows.size());
-    if (tabToPreviousTimerId != -1)
+    if (tabToPreviousTimer.isActive())
         activateWindow(nextVisibleSubWindow(-1, QMdiArea::ActivationHistoryOrder));
     else
         activateWindow(childWindows.at(indexToHighlighted));
@@ -1075,6 +1073,13 @@ void QMdiAreaPrivate::updateActiveWindow(int removedIndex, bool activeRemoved)
 {
     Q_ASSERT(indicesToActivatedChildren.size() == childWindows.size());
 
+    // Update indices list first so that we don't rely
+    for (int i = 0; i < indicesToActivatedChildren.size(); ++i) {
+        int &index = indicesToActivatedChildren[i];
+        if (index > removedIndex)
+            --index;
+    }
+
 #if QT_CONFIG(tabbar)
     if (tabBar && removedIndex >= 0) {
         const QSignalBlocker blocker(tabBar);
@@ -1099,13 +1104,6 @@ void QMdiAreaPrivate::updateActiveWindow(int removedIndex, bool activeRemoved)
         // or update index if necessary.
         if (indexToHighlighted > removedIndex)
             --indexToHighlighted;
-    }
-
-    // Update indices list
-    for (int i = 0; i < indicesToActivatedChildren.size(); ++i) {
-        int *index = &indicesToActivatedChildren[i];
-        if (*index > removedIndex)
-            --*index;
     }
 
     if (!activeRemoved)
@@ -1483,7 +1481,7 @@ void QMdiAreaPrivate::highlightNextSubWindow(int increaseFactor)
 
     // Only highlight if we're not switching back to the previously active window (Ctrl-Tab once).
 #if QT_CONFIG(rubberband)
-    if (tabToPreviousTimerId == -1)
+    if (!tabToPreviousTimer.isActive())
         showRubberBandFor(highlight);
 #endif
 
@@ -2326,13 +2324,11 @@ void QMdiArea::resizeEvent(QResizeEvent *resizeEvent)
 void QMdiArea::timerEvent(QTimerEvent *timerEvent)
 {
     Q_D(QMdiArea);
-    if (timerEvent->timerId() == d->resizeTimerId) {
-        killTimer(d->resizeTimerId);
-        d->resizeTimerId = -1;
+    if (timerEvent->id() == d->resizeTimer.id()) {
+        d->resizeTimer.stop();
         d->arrangeMinimizedSubWindows();
-    } else if (timerEvent->timerId() == d->tabToPreviousTimerId) {
-        killTimer(d->tabToPreviousTimerId);
-        d->tabToPreviousTimerId = -1;
+    } else if (timerEvent->id() == d->tabToPreviousTimer.id()) {
+        d->tabToPreviousTimer.stop();
         if (d->indexToHighlighted < 0)
             return;
 #if QT_CONFIG(rubberband)

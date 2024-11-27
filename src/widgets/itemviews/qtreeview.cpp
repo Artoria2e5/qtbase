@@ -25,6 +25,8 @@
 
 #include <algorithm>
 
+using namespace std::chrono_literals;
+
 QT_BEGIN_NAMESPACE
 
 /*!
@@ -35,7 +37,7 @@ QT_BEGIN_NAMESPACE
     \ingroup advanced
     \inmodule QtWidgets
 
-    \image windows-treeview.png
+    \image fusion-treeview.png
 
     A QTreeView implements a tree representation of items from a
     model. This class is used to provide standard hierarchical lists that
@@ -308,7 +310,7 @@ void QTreeView::setHeader(QHeaderView *header)
   \brief The delay time before items in a tree are opened during a drag and drop operation.
 
   This property holds the amount of time in milliseconds that the user must wait over
-  a node before that node will automatically open or close.  If the time is
+  a node before that node will automatically open.  If the time is
   set to less then 0 then it will not be activated.
 
   By default, this property has a value of -1, meaning that auto-expansion is disabled.
@@ -1243,10 +1245,9 @@ void QTreeView::changeEvent(QEvent *event)
 void QTreeView::timerEvent(QTimerEvent *event)
 {
     Q_D(QTreeView);
-    if (event->timerId() == d->columnResizeTimerID) {
+    if (event->id() == d->columnResizeTimer.id()) {
         updateGeometries();
-        killTimer(d->columnResizeTimerID);
-        d->columnResizeTimerID = 0;
+        d->columnResizeTimer.stop();
         QRect rect;
         int viewportHeight = d->viewport->height();
         int viewportWidth = d->viewport->width();
@@ -1265,7 +1266,7 @@ void QTreeView::timerEvent(QTimerEvent *event)
         if (state() == QAbstractItemView::DraggingState
             && d->viewport->rect().contains(pos)) {
             QModelIndex index = indexAt(pos);
-            setExpanded(index, !isExpanded(index));
+            expand(index);
         }
         d->openTimer.stop();
     }
@@ -2863,8 +2864,8 @@ void QTreeView::columnResized(int column, int /* oldSize */, int /* newSize */)
 {
     Q_D(QTreeView);
     d->columnsToUpdate.append(column);
-    if (d->columnResizeTimerID == 0)
-        d->columnResizeTimerID = startTimer(0);
+    if (!d->columnResizeTimer.isActive())
+        d->columnResizeTimer.start(0ns, this);
 }
 
 /*!

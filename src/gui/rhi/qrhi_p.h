@@ -139,6 +139,7 @@ public:
     virtual QRhiDriverInfo driverInfo() const = 0;
     virtual QRhiStats statistics() = 0;
     virtual bool makeThreadLocalNativeContextCurrent() = 0;
+    virtual void setQueueSubmitParams(QRhiNativeHandles *params) = 0;
     virtual void releaseCachedResources() = 0;
     virtual bool isDeviceLost() const = 0;
 
@@ -531,11 +532,11 @@ public:
     };
 
     int activeBufferOpCount = 0; // this is the real number of used elements in bufferOps, not bufferOps.count()
-    static const int BUFFER_OPS_STATIC_ALLOC = 1024;
+    static const int BUFFER_OPS_STATIC_ALLOC = 64;
     QVarLengthArray<BufferOp, BUFFER_OPS_STATIC_ALLOC> bufferOps;
 
     int activeTextureOpCount = 0; // this is the real number of used elements in textureOps, not textureOps.count()
-    static const int TEXTURE_OPS_STATIC_ALLOC = 256;
+    static const int TEXTURE_OPS_STATIC_ALLOC = 32;
     QVarLengthArray<TextureOp, TEXTURE_OPS_STATIC_ALLOC> textureOps;
 
     QRhiResourceUpdateBatch *q = nullptr;

@@ -26,6 +26,7 @@
 QT_BEGIN_NAMESPACE
 
 Q_STATIC_LOGGING_CATEGORY(lcCheckIndex, "qt.core.qabstractitemmodel.checkindex")
+Q_STATIC_LOGGING_CATEGORY(lcReset, "qt.core.qabstractitemmodel.reset")
 
 QT_IMPL_METATYPE_EXTERN(QModelIndexList)
 
@@ -34,7 +35,7 @@ QPersistentModelIndexData *QPersistentModelIndexData::create(const QModelIndex &
     Q_ASSERT(index.isValid()); // we will _never_ insert an invalid index in the list
     QPersistentModelIndexData *d = nullptr;
     QAbstractItemModel *model = const_cast<QAbstractItemModel *>(index.model());
-    QMultiHash<QModelIndex, QPersistentModelIndexData *> &indexes = model->d_func()->persistent.indexes;
+    QMultiHash<QtPrivate::QModelIndexWrapper, QPersistentModelIndexData *> &indexes = model->d_func()->persistent.indexes;
     const auto it = indexes.constFind(index);
     if (it != indexes.cend()) {
         d = (*it);
@@ -444,9 +445,7 @@ QPersistentModelIndex &QPersistentModelIndex::operator=(const QPersistentModelIn
 /*!
     \fn void QPersistentModelIndex::swap(QPersistentModelIndex &other)
     \since 5.0
-
-    Swaps this persistent modelindex with \a other. This function is
-    very fast and never fails.
+    \memberswap{persistent modelindex}
 */
 
 /*!
@@ -3400,6 +3399,14 @@ void QAbstractItemModel::endMoveColumns()
 */
 void QAbstractItemModel::beginResetModel()
 {
+    Q_D(QAbstractItemModel);
+    if (d->resetting) {
+        qWarning() << "beginResetModel called on" << this << "without calling endResetModel first";
+        // Warn, but don't return early in case user code relies on the incorrect behavior.
+    }
+
+    qCDebug(lcReset) << "beginResetModel called; about to emit modelAboutToBeReset";
+    d->resetting = true;
     emit modelAboutToBeReset(QPrivateSignal());
 }
 
@@ -3417,8 +3424,15 @@ void QAbstractItemModel::beginResetModel()
 void QAbstractItemModel::endResetModel()
 {
     Q_D(QAbstractItemModel);
+    if (!d->resetting) {
+        qWarning() << "endResetModel called on" << this << "without calling beginResetModel first";
+        // Warn, but don't return early in case user code relies on the incorrect behavior.
+    }
+
+    qCDebug(lcReset) << "endResetModel called; about to emit modelReset";
     d->invalidatePersistentIndexes();
     resetInternalData();
+    d->resetting = false;
     emit modelReset(QPrivateSignal());
 }
 

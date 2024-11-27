@@ -78,7 +78,10 @@ public:
     static QString infoDictionaryStringProperty(const QString &propertyName);
 #endif
 
-    void initConsole();
+#ifdef Q_OS_WINDOWS
+    void initDebuggingConsole();
+    void cleanupDebuggingConsole();
+#endif
     static void initLocale();
 
     static bool checkInstance(const char *method);
@@ -110,7 +113,6 @@ public:
     static QBasicAtomicPointer<QThread> theMainThread;
     static QBasicAtomicPointer<void> theMainThreadId;
     static QThread *mainThread();
-    static bool threadRequiresCoreApplication();
 
     static void sendPostedEvents(QObject *receiver, int event_type, QThreadData *data);
 

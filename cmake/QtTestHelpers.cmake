@@ -41,6 +41,7 @@ function(qt_internal_add_benchmark target)
     qt_internal_add_executable(${target}
         NO_INSTALL # we don't install benchmarks
         NO_UNITY_BUILD # excluded by default
+        QT_BENCHMARK_TEST
         OUTPUT_DIRECTORY "${arg_OUTPUT_DIRECTORY}" # avoid polluting bin directory
         ${exec_args}
     )
@@ -193,7 +194,7 @@ function(qt_internal_prepare_test_target_flags version_arg exceptions_text gui_t
     # Qt modules get compiled without exceptions enabled by default.
     # However, testcases should be still built with exceptions.
     set(${exceptions_text} "EXCEPTIONS" PARENT_SCOPE)
-    if (${arg_NO_EXCEPTIONS} OR WASM)
+    if (${arg_NO_EXCEPTIONS})
         set(${exceptions_text} "" PARENT_SCOPE)
     endif()
 
@@ -217,6 +218,7 @@ function(qt_internal_get_test_arg_definitions optional_args single_value_args mu
         NO_BATCH
         NO_INSTALL
         BUNDLE_ANDROID_OPENSSL_LIBS
+        NO_WASM_DEFAULT_FILES
         PARENT_SCOPE
     )
     set(${single_value_args}
@@ -249,11 +251,19 @@ function(qt_internal_add_test_to_batch batch_name name)
 
     # Lazy-init the test batch
     if(NOT TARGET ${target})
+        if(${arg_MANUAL})
+            set(is_manual "QT_MANUAL_TEST")
+        else()
+            set(is_manual "")
+        endif()
+
         qt_internal_add_executable(${target}
             ${exceptions_text}
             ${gui_text}
             ${version_arg}
             NO_INSTALL
+            QT_TEST
+            ${is_manual}
             OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/build_dir"
             SOURCES "${QT_CMAKE_DIR}/qbatchedtestrunner.in.cpp"
             DEFINES QTEST_BATCH_TESTS ${deprecation_define}
@@ -272,8 +282,6 @@ function(qt_internal_add_test_to_batch batch_name name)
         set_property(TARGET ${target} PROPERTY _qt_has_gui ${arg_GUI})
         set_property(TARGET ${target} PROPERTY _qt_has_lowdpi ${arg_LOWDPI})
         set_property(TARGET ${target} PROPERTY _qt_version ${version_arg})
-        set_property(TARGET ${target} PROPERTY _qt_is_test_executable TRUE)
-        set_property(TARGET ${target} PROPERTY _qt_is_manual_test ${arg_MANUAL})
     else()
         # Check whether the args match with the batch. Some differences between
         # flags cannot be reconciled - one should not combine these tests into
@@ -511,11 +519,19 @@ function(qt_internal_add_test name)
 
         qt_internal_prepare_test_target_flags(version_arg exceptions_text gui_text ${ARGN})
 
+        if(${arg_MANUAL})
+            set(is_manual "QT_MANUAL_TEST")
+        else()
+            set(is_manual "")
+        endif()
+
         qt_internal_add_executable("${name}"
             ${exceptions_text}
             ${gui_text}
             ${version_arg}
             NO_INSTALL
+            QT_TEST
+            ${is_manual}
             OUTPUT_DIRECTORY "${arg_OUTPUT_DIRECTORY}"
             SOURCES "${arg_SOURCES}"
             INCLUDE_DIRECTORIES
@@ -578,13 +594,18 @@ function(qt_internal_add_test name)
         qt_internal_extend_target("${name}" CONDITION ANDROID
             LIBRARIES ${QT_CMAKE_EXPORT_NAMESPACE}::Gui
         )
-        set_target_properties(${name} PROPERTIES _qt_is_test_executable TRUE)
-        set_target_properties(${name} PROPERTIES _qt_is_manual_test ${arg_MANUAL})
 
         set(blacklist_file "${CMAKE_CURRENT_SOURCE_DIR}/BLACKLIST")
         if(EXISTS ${blacklist_file})
             _qt_internal_expose_source_file_to_ide("${name}" ${blacklist_file})
         endif()
+    endif()
+
+    if (arg_NO_WASM_DEFAULT_FILES)
+        set_target_properties(
+                ${name}
+            PROPERTIES
+                NO_WASM_DEFAULT_FILES  True)
     endif()
 
     foreach(path IN LISTS arg_QML_IMPORTPATH)
@@ -645,8 +666,17 @@ function(qt_internal_add_test name)
                                "This is fine if OpenSSL was built statically.")
             endif()
         endif()
-        qt_internal_android_test_arguments(
-            "${name}" "${android_timeout}" test_executable extra_test_args)
+        qt_internal_android_test_runner_arguments("${name}" test_executable extra_test_args)
+        list(APPEND extra_test_args "--timeout" "${android_timeout}")
+
+        set(build_environment "")
+        if(DEFINED ENV{QT_BUILD_ENVIRONMENT})
+            set(build_environment "$ENV{QT_BUILD_ENVIRONMENT}")
+        endif()
+
+        if(QT_ENABLE_VERBOSE_DEPLOYMENT OR build_environment STREQUAL "ci")
+            list(APPEND extra_test_args "--verbose")
+        endif()
         set(test_working_dir "${CMAKE_CURRENT_BINARY_DIR}")
     elseif(QNX)
         set(test_working_dir "")
@@ -665,7 +695,12 @@ function(qt_internal_add_test name)
         list(APPEND extra_test_args "qtestname=${testname}")
         list(APPEND extra_test_args "--silence_timeout=60")
         # TODO: Add functionality to specify browser
-        list(APPEND extra_test_args "--browser=chrome")
+        if(DEFINED ENV{BROWSER_FOR_WASM})
+            set(browser $ENV{BROWSER_FOR_WASM})
+        else()
+            set(browser "chrome")
+        endif()
+        list(APPEND extra_test_args "--browser=${browser}")
         list(APPEND extra_test_args "--browser_args=\"--password-store=basic\"")
         list(APPEND extra_test_args "--kill_exit")
 
@@ -797,10 +832,10 @@ function(qt_internal_add_test name)
                     if(NOT blacklist_files)
                         set_target_properties(${name} PROPERTIES _qt_blacklist_files "")
                         set(blacklist_files "")
-                        cmake_language(EVAL CODE "cmake_language(DEFER DIRECTORY \"${CMAKE_SOURCE_DIR}\" CALL \"_qt_internal_finalize_batch\" \"${name}\") ")
                     endif()
                     list(PREPEND blacklist_files "${CMAKE_CURRENT_SOURCE_DIR}/${blacklist_path}")
-                    set_target_properties(${name} PROPERTIES _qt_blacklist_files "${blacklist_files}")
+                    set_target_properties(${name} PROPERTIES
+                        _qt_blacklist_files "${blacklist_files}")
                 endif()
             else()
                 set(blacklist_path "BLACKLIST")
@@ -863,6 +898,35 @@ function(qt_internal_add_test name)
     qt_internal_add_test_finalizers("${name}")
 endfunction()
 
+# Generates a blacklist file for the global batched test target.
+function(qt_internal_finalize_test_batch_blacklist)
+    _qt_internal_test_batch_target_name(batch_target_name)
+    if(NOT TARGET "${batch_target_name}")
+        return()
+    endif()
+
+    set(generated_blacklist_file "${CMAKE_CURRENT_BINARY_DIR}/BLACKLIST")
+
+    set(final_contents "")
+
+    get_target_property(blacklist_files "${batch_target_name}" _qt_blacklist_files)
+    if(blacklist_files)
+        foreach(blacklist_file ${blacklist_files})
+            file(READ "${blacklist_file}" file_contents)
+            if(file_contents)
+                string(APPEND final_contents "${file_contents}\n")
+            endif()
+        endforeach()
+    endif()
+
+    qt_configure_file(OUTPUT "${generated_blacklist_file}" CONTENT "${final_contents}")
+
+    qt_internal_add_resource(${batch_target_name} "batch_blacklist"
+        PREFIX "/"
+        FILES "${generated_blacklist_file}"
+        BASE ${CMAKE_CURRENT_BINARY_DIR})
+endfunction()
+
 # Given an optional test timeout value (specified via qt_internal_add_test's TIMEOUT option)
 # returns a percentage of the final timeout to be passed to the androidtestrunner executable.
 #
@@ -870,12 +934,7 @@ endfunction()
 function(qt_internal_get_android_test_timeout input_timeout percentage output_timeout_var)
     set(actual_timeout "${input_timeout}")
     if(NOT actual_timeout)
-        # we have coin ci timeout set use that to avoid having the emulator killed
-        # so we can at least get some logs from the android test runner.
-        set(coin_timeout $ENV{COIN_COMMAND_OUTPUT_TIMEOUT})
-        if(coin_timeout)
-            set(actual_timeout "${coin_timeout}")
-        elseif(DART_TESTING_TIMEOUT)
+        if(DART_TESTING_TIMEOUT)
             # Related: https://gitlab.kitware.com/cmake/cmake/-/issues/20450
             set(actual_timeout "${DART_TESTING_TIMEOUT}")
         elseif(CTEST_TEST_TIMEOUT)
@@ -935,7 +994,6 @@ for this function. Will be ignored")
     if(arg_ARGS)
         set(command_args ${arg_ARGS})# Avoid "${arg_ARGS}" usage and let cmake expand string to
                                     # semicolon-separated list
-        qt_internal_wrap_command_arguments(command_args)
     endif()
 
     if(TARGET ${arg_COMMAND})
@@ -961,13 +1019,15 @@ for this function. Will be ignored")
         get_target_property(crosscompiling_emulator ${executable_name} CROSSCOMPILING_EMULATOR)
         if(NOT crosscompiling_emulator)
             set(crosscompiling_emulator "")
-        else()
-            qt_internal_wrap_command_arguments(crosscompiling_emulator)
         endif()
     endif()
 
-    _qt_internal_create_command_script(COMMAND "${crosscompiling_emulator} \${env_test_runner} \
-\"${executable_file}\" \${env_test_args} ${command_args}"
+    _qt_internal_create_command_script(COMMAND
+                                           ${crosscompiling_emulator}
+                                           "\${env_test_runner}"
+                                           "${executable_file}"
+                                           "\${env_test_args}"
+                                           ${command_args}
                                       OUTPUT_FILE "${arg_OUTPUT_FILE}"
                                       WORKING_DIRECTORY "${arg_WORKING_DIRECTORY}"
                                       ENVIRONMENT ${arg_ENVIRONMENT}
@@ -1031,12 +1091,6 @@ function(qt_internal_add_test_helper name)
 
 endfunction()
 
-function(qt_internal_wrap_command_arguments argument_list)
-    list(TRANSFORM ${argument_list} REPLACE "^(.+)$" "[=[\\1]=]")
-    list(JOIN ${argument_list} " " ${argument_list})
-    set(${argument_list} "${${argument_list}}" PARENT_SCOPE)
-endfunction()
-
 function(qt_internal_collect_command_environment out_path out_plugin_path)
     # Get path to <qt_relocatable_install_prefix>/bin, as well as CMAKE_INSTALL_PREFIX/bin, and
     # combine them with the PATH environment variable.
@@ -1078,6 +1132,14 @@ function(qt_internal_collect_command_environment out_path out_plugin_path)
 endfunction()
 
 function(qt_internal_add_test_finalizers target)
+    # Opt out to skip the new way of running test finalizers, and instead use the old way for
+    # specific platforms.
+    # TODO: Remove once we confirm that the new way of running test finalizers for all platforms
+    # doesn't cause any issues.
+    if(QT_INTERNAL_SKIP_TEST_FINALIZERS_V2)
+        return()
+    endif()
+
     # It might not be safe to run all the finalizers of _qt_internal_finalize_executable
     # within the context of a Qt build (not a user project) when targeting a host build.
     # At least one issue is missing qmlimportscanner at configure time.

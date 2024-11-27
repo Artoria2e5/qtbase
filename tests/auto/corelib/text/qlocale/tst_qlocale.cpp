@@ -42,6 +42,7 @@ public:
 private slots:
     void initTestCase();
     void compareCompiles();
+    void compareWithLanguage();
 #if defined(Q_OS_WIN)
     void windowsDefaultLocale();
 #endif
@@ -191,11 +192,6 @@ tst_QLocale::tst_QLocale()
     qRegisterMetaType<QLocale::FormatType>("QLocale::FormatType");
 }
 
-void tst_QLocale::compareCompiles()
-{
-    QTestPrivate::testEqualityOperatorsCompile<QLocale>();
-}
-
 void tst_QLocale::initTestCase()
 {
 #ifdef Q_OS_ANDROID
@@ -225,6 +221,25 @@ void tst_QLocale::initTestCase()
         cleanEnv << entry;
     }
 #endif // QT_CONFIG(process)
+}
+
+void tst_QLocale::compareCompiles()
+{
+    QTestPrivate::testEqualityOperatorsCompile<QLocale>();
+    QTestPrivate::testEqualityOperatorsCompile<QLocale, QLocale::Language>();
+}
+
+void tst_QLocale::compareWithLanguage()
+{
+    QLocale de(QLocale::German);
+    QT_TEST_EQUALITY_OPS(de, QLocale::German, true);
+    QT_TEST_EQUALITY_OPS(de, QLocale::English, false);
+
+    QLocale en_DE(QLocale::English, QLocale::Germany);
+    QCOMPARE_EQ(en_DE.language(), QLocale::English);
+    QCOMPARE_EQ(en_DE.territory(), QLocale::Germany);
+    // Territory won't match
+    QT_TEST_EQUALITY_OPS(en_DE, QLocale::English, false);
 }
 
 void tst_QLocale::ctor_data()
@@ -1130,7 +1145,8 @@ void tst_QLocale::stringToFloat()
     QLocale locale(locale_name);
     QCOMPARE(locale.name(), locale_name);
 
-    if constexpr (std::numeric_limits<float>::has_denorm != std::denorm_present) {
+    QT_IGNORE_DEPRECATIONS(constexpr bool float_has_denorm = std::numeric_limits<float>::has_denorm != std::denorm_present;)
+    if constexpr (float_has_denorm) {
         if (qstrcmp(QTest::currentDataTag(), "C float -min") == 0
                 || qstrcmp(QTest::currentDataTag(), "C float min") == 0)
             QSKIP("Skipping 'denorm' as this type lacks denormals on this system");
@@ -1139,7 +1155,8 @@ void tst_QLocale::stringToFloat()
     float f = locale.toFloat(num_str, &ok);
     QCOMPARE(ok, good);
 
-    if constexpr (std::numeric_limits<double>::has_denorm != std::denorm_present) {
+    QT_IGNORE_DEPRECATIONS(constexpr bool double_has_denorm = std::numeric_limits<double>::has_denorm != std::denorm_present;)
+    if constexpr (double_has_denorm) {
         if (qstrcmp(QTest::currentDataTag(), "C double min") == 0
                 || qstrcmp(QTest::currentDataTag(), "C double -min") == 0
                 || qstrcmp(QTest::currentDataTag(), "C tiny") == 0
@@ -3043,10 +3060,9 @@ void tst_QLocale::negativeNumbers()
     QT_TEST_EQUALITY_OPS(egypt, farsi, false);
 }
 
+#ifdef QT_BUILD_INTERNAL
 #include <private/qlocale_p.h>
-#include <private/qlocale_data_p.h>
-
-static const int locale_data_count = sizeof(locale_data)/sizeof(locale_data[0]);
+#endif
 
 void tst_QLocale::testNames_data()
 {
@@ -3055,16 +3071,21 @@ void tst_QLocale::testNames_data()
 
     QLocale::setDefault(QLocale(QLocale::C)); // Ensures predictable fall-backs
 
-    for (int i = 0; i < locale_data_count; ++i) {
-        const QLocaleData &item = locale_data[i];
+#ifdef QT_BUILD_INTERNAL
+    bool ok = QLocaleData::allLocaleDataRows([](qsizetype index, const QLocaleData &item) {
         const QByteArray lang =
                 QLocale::languageToString(QLocale::Language(item.m_language_id)).toUtf8();
         const QByteArray land =
                 QLocale::territoryToString(QLocale::Territory(item.m_territory_id)).toUtf8();
 
-        QTest::addRow("data_%d (%s/%s)", i, lang.constData(), land.constData())
+        QTest::addRow("data_%d (%s/%s)", int(index), lang.constData(), land.constData())
                 << QLocale::Language(item.m_language_id) << QLocale::Territory(item.m_territory_id);
-    }
+        return true;
+    });
+    QVERIFY(ok);
+#else
+    QSKIP("Only internal builds can access the data to set up this test");
+#endif // QT_BUILD_INTERNAL
 }
 
 void tst_QLocale::testNames()
@@ -3661,40 +3682,44 @@ void tst_QLocale::uiLanguages_data()
     QTest::addColumn<QLocale>("locale");
     QTest::addColumn<QStringList>("all");
 
-    QTest::newRow("C") << QLocale::c() << QStringList{QString("C")};
+    QTest::newRow("C") << QLocale::c() << QStringList{u"C"_s};
 
     QTest::newRow("en_US")
-        << QLocale("en_US")
-        << QStringList{QString("en-Latn-US"), QString("en-US"), QString("en")};
-
+        << QLocale("en_US") << QStringList{u"en-Latn-US"_s, u"en-US"_s, u"en"_s, u"en-Latn"_s};
     QTest::newRow("en_Latn_US")
         << QLocale("en_Latn_US") // Specifying the default script makes no difference
-        << QStringList{QString("en-Latn-US"), QString("en-US"), QString("en")};
+        << QStringList{u"en-Latn-US"_s, u"en-US"_s, u"en"_s, u"en-Latn"_s};
 
     QTest::newRow("en_GB")
-        << QLocale("en_GB")
-        << QStringList{QString("en-Latn-GB"), QString("en-GB")};
-
+        << QLocale("en_GB") << QStringList{u"en-Latn-GB"_s, u"en-GB"_s, u"en-Latn"_s, u"en"_s};
     QTest::newRow("en_Dsrt_US")
-        << QLocale("en_Dsrt_US")
-        << QStringList{QString("en-Dsrt-US"), QString("en-Dsrt")};
+        << QLocale("en_Dsrt_US") << QStringList{u"en-Dsrt-US"_s, u"en-Dsrt"_s, u"en"_s};
 
     QTest::newRow("ru_RU")
-        << QLocale("ru_RU")
-        << QStringList{QString("ru-Cyrl-RU"), QString("ru-RU"), QString("ru")};
+        << QLocale("ru_RU") << QStringList{u"ru-Cyrl-RU"_s, u"ru-RU"_s, u"ru"_s, u"ru-Cyrl"_s};
 
     QTest::newRow("zh_Hant")
         << QLocale("zh_Hant")
-        << QStringList{QString("zh-Hant-TW"), QString("zh-TW")};
+        << QStringList{u"zh-Hant-TW"_s, u"zh-TW"_s, u"zh-Hant"_s, u"zh"_s};
 
     QTest::newRow("zh_Hans_CN")
         << QLocale(QLocale::Chinese, QLocale::SimplifiedHanScript, QLocale::China)
-        << QStringList{QString("zh-Hans-CN"), QString("zh-CN"), QString("zh")};
+        << QStringList{u"zh-Hans-CN"_s, u"zh-CN"_s, u"zh"_s, u"zh-Hans"_s};
+
+    // GB has no native Punjabi locales, so is eliminated by likely subtag rules:
+    QTest::newRow("pa_IN")
+        << QLocale("pa_IN") << QStringList{u"pa-Guru-IN"_s, u"pa-IN"_s, u"pa"_s, u"pa-Guru"_s};
+    QTest::newRow("pa_GB")
+        << QLocale("pa_GB") << QStringList{u"pa-Guru-IN"_s, u"pa-IN"_s, u"pa"_s, u"pa-Guru"_s};
+    QTest::newRow("pa_PK")
+        << QLocale("pa_PK") << QStringList{u"pa-Arab-PK"_s, u"pa-PK"_s, u"pa-Arab"_s, u"pa"_s};
+    QTest::newRow("pa_Arab_GB")
+        << QLocale("pa_Arab_GB") << QStringList{u"pa-Arab-PK"_s, u"pa-PK"_s, u"pa-Arab"_s, u"pa"_s};
 
     // We presently map und (or any other unrecognized language) to C, ignoring
     // what a sub-tag lookup would surely find us.
-    QTest::newRow("und_US") << QLocale("und_US") << QStringList{QString("C")};
-    QTest::newRow("und_Latn") << QLocale("und_Latn") << QStringList{QString("C")};
+    QTest::newRow("und_US") << QLocale("und_US") << QStringList{u"C"_s};
+    QTest::newRow("und_Latn") << QLocale("und_Latn") << QStringList{u"C"_s};
 }
 
 void tst_QLocale::uiLanguages()
@@ -4053,8 +4078,24 @@ public:
     {
         switch (type) {
         case UILanguages:
+            if (m_name == u"en-Latn")
+                return QVariant(QStringList{u"en-NO"_s});
             if (m_name == u"en-DE") // QTBUG-104930: simulate macOS's list not including m_name.
-                return QVariant(QStringList{QStringLiteral("en-GB"), QStringLiteral("de-DE")});
+                return QVariant(QStringList{u"en-GB"_s, u"de-DE"_s});
+            if (m_name == u"en-Dsrt-GB")
+                return QVariant(QStringList{u"en-Dsrt-GB"_s, u"en-GB"_s});
+            if (m_name == u"en-FO") { // Nominally Faroe Islands, used for en-mixed test
+                return QVariant(QStringList{u"en-DK"_s, u"en-GB"_s, u"fo-FO"_s,
+                                            u"da-FO"_s, u"da-DK"_s});
+            }
+            if (m_name == u"de-CA") { // Imagine a 2nd generation Canadian of de-AT ancestry ...
+                return QVariant(QStringList{u"en-CA"_s, u"fr-CA"_s, u"de-AT"_s,
+                                            u"en-GB"_s, u"fr-FR"_s});
+            }
+            if (m_name == u"no") // QTBUG-131127
+                return QVariant(QStringList{u"no"_s, u"en-US"_s, u"nb"_s});
+            if (m_name == u"no-US") // Empty query result:
+                return QVariant(QStringList{});
             return QVariant(QStringList{m_name});
         case LanguageId:
             return m_id.language_id;
@@ -4087,66 +4128,92 @@ void tst_QLocale::mySystemLocale_data()
     QTest::addColumn<QLocale::Language>("language");
     QTest::addColumn<QStringList>("uiLanguages");
 
+    QTest::addRow("empty")
+        << u"no-US"_s << QLocale::NorwegianBokmal
+        << QStringList{u"nb-US"_s, u"nb-Latn-US"_s,
+                       u"nb-Latn-NO"_s, u"nb-NO"_s, u"nb"_s, u"nb-Latn"_s};
+    QTest::addRow("no") // QTBUG-131127
+        << u"no"_s << QLocale::NorwegianBokmal
+        << QStringList{u"no"_s, u"nb-Latn-NO"_s, u"nb-NO"_s, u"en-US"_s, u"en-Latn-US"_s, u"en"_s,
+                       u"nb"_s, u"nb-Latn-NO"_s, u"nb-NO"_s, u"nb-Latn"_s, u"en-Latn"_s};
+    QTest::addRow("en-Latn") // Android crash
+        << u"en-Latn"_s << QLocale::English
+        << QStringList{u"en-Latn"_s, u"en-Latn-US"_s, u"en-US"_s, u"en"_s,
+                       u"en-NO"_s, u"en-Latn-NO"_s};
+
     QTest::addRow("catalan")
-        << QString("ca") << QLocale::Catalan
-        << QStringList{QStringLiteral("ca"), QStringLiteral("ca-Latn-ES"), QStringLiteral("ca-ES")};
+        << u"ca"_s << QLocale::Catalan
+        << QStringList{u"ca"_s, u"ca-Latn-ES"_s, u"ca-ES"_s, u"ca-Latn"_s};
     QTest::addRow("catalan-spain")
-        << QString("ca-ES") << QLocale::Catalan
-        << QStringList{QStringLiteral("ca-ES"), QStringLiteral("ca-Latn-ES"), QStringLiteral("ca")};
+        << u"ca-ES"_s << QLocale::Catalan
+        << QStringList{u"ca-ES"_s, u"ca-Latn-ES"_s, u"ca"_s, u"ca-Latn"_s};
     QTest::addRow("catalan-latin")
-        << QString("ca-Latn") << QLocale::Catalan
-        << QStringList{QStringLiteral("ca-Latn"), QStringLiteral("ca-Latn-ES"),
-                       QStringLiteral("ca-ES"), QStringLiteral("ca")};
+        << u"ca-Latn"_s << QLocale::Catalan
+        << QStringList{u"ca-Latn"_s, u"ca-Latn-ES"_s, u"ca-ES"_s, u"ca"_s};
     QTest::addRow("ukrainian")
-        << QString("uk") << QLocale::Ukrainian
-        << QStringList{QStringLiteral("uk"), QStringLiteral("uk-Cyrl-UA"), QStringLiteral("uk-UA")};
+        << u"uk"_s << QLocale::Ukrainian
+        << QStringList{u"uk"_s, u"uk-Cyrl-UA"_s, u"uk-UA"_s, u"uk-Cyrl"_s};
+
     QTest::addRow("english-germany")
-        << QString("en-DE") << QLocale::English
+        << u"en-DE"_s << QLocale::English
         // First two were missed out before fix to QTBUG-104930:
-        << QStringList{QStringLiteral("en-DE"), QStringLiteral("en-Latn-DE"),
-                       QStringLiteral("en-GB"), QStringLiteral("en-Latn-GB"),
-                       QStringLiteral("de-DE"), QStringLiteral("de-Latn-DE"), QStringLiteral("de")};
+        << QStringList{u"en-DE"_s, u"en-Latn-DE"_s,
+                       u"en-GB"_s, u"en-Latn-GB"_s,
+                       u"de-DE"_s, u"de-Latn-DE"_s, u"de"_s,
+                      // Fallbacks implied by those:
+                       u"en-Latn"_s, u"en"_s, u"de-Latn"_s};
+
     QTest::addRow("german")
-        << QString("de") << QLocale::German
-        << QStringList{QStringLiteral("de"), QStringLiteral("de-Latn-DE"), QStringLiteral("de-DE")};
+        << u"de"_s << QLocale::German
+        << QStringList{u"de"_s, u"de-Latn-DE"_s, u"de-DE"_s, u"de-Latn"_s};
     QTest::addRow("german-britain")
-        << QString("de-GB") << QLocale::German
-        << QStringList{QStringLiteral("de-GB"), QStringLiteral("de-Latn-GB")};
+        << u"de-GB"_s << QLocale::German
+        << QStringList{u"de-GB"_s, u"de-Latn-GB"_s, u"de-Latn"_s, u"de"_s};
     QTest::addRow("chinese-min")
-        << QString("zh") << QLocale::Chinese
-        << QStringList{QStringLiteral("zh"), QStringLiteral("zh-Hans-CN"), QStringLiteral("zh-CN")};
+        << u"zh"_s << QLocale::Chinese
+        << QStringList{u"zh"_s, u"zh-Hans-CN"_s, u"zh-CN"_s, u"zh-Hans"_s};
     QTest::addRow("chinese-full")
-        << QString("zh-Hans-CN") << QLocale::Chinese
-        << QStringList{QStringLiteral("zh-Hans-CN"), QStringLiteral("zh-CN"), QStringLiteral("zh")};
+        << u"zh-Hans-CN"_s << QLocale::Chinese
+        << QStringList{u"zh-Hans-CN"_s, u"zh-CN"_s, u"zh"_s, u"zh-Hans"_s};
 
     // For C, it should preserve what the system gave us but only add "C", never anything more:
-    QTest::addRow("C") << QString("C") << QLocale::C << QStringList{QStringLiteral("C")};
-    QTest::addRow("C-Latn")
-        << QString("C-Latn") << QLocale::C
-        << QStringList{QStringLiteral("C-Latn"), QStringLiteral("C")};
-    QTest::addRow("C-US")
-        << QString("C-US") << QLocale::C
-        << QStringList{QStringLiteral("C-US"), QStringLiteral("C")};
+    QTest::addRow("C") << u"C"_s << QLocale::C << QStringList{u"C"_s};
+    QTest::addRow("C-Latn") << u"C-Latn"_s << QLocale::C << QStringList{u"C-Latn"_s, u"C"_s};
+    QTest::addRow("C-US") << u"C-US"_s << QLocale::C << QStringList{u"C-US"_s, u"C"_s};
     QTest::addRow("C-Latn-US")
-        << QString("C-Latn-US") << QLocale::C
-        << QStringList{QStringLiteral("C-Latn-US"), QStringLiteral("C")};
-    QTest::addRow("C-Hans")
-        << QString("C-Hans") << QLocale::C
-        << QStringList{QStringLiteral("C-Hans"), QStringLiteral("C")};
-    QTest::addRow("C-CN")
-        << QString("C-CN") << QLocale::C
-        << QStringList{QStringLiteral("C-CN"), QStringLiteral("C")};
+        << u"C-Latn-US"_s << QLocale::C << QStringList{u"C-Latn-US"_s, u"C"_s};
+    QTest::addRow("C-Hans") << u"C-Hans"_s << QLocale::C << QStringList{u"C-Hans"_s, u"C"_s};
+    QTest::addRow("C-CN") << u"C-CN"_s << QLocale::C << QStringList{u"C-CN"_s, u"C"_s};
     QTest::addRow("C-Hans-CN")
-        << QString("C-Hans-CN") << QLocale::C
-        << QStringList{QStringLiteral("C-Hans-CN"), QStringLiteral("C")};
+        << u"C-Hans-CN"_s << QLocale::C << QStringList{u"C-Hans-CN"_s, u"C"_s};
+
+    QTest::newRow("en-Dsrt-GB")
+        << u"en-Dsrt-GB"_s << QLocale::English
+        << QStringList{u"en-Dsrt-GB"_s, u"en-GB"_s, u"en-Latn-GB"_s,
+                       // Fallbacks - plain "en" last, not between the others:
+                       u"en-Dsrt"_s, u"en-Latn"_s, u"en"_s};
+    QTest::newRow("en-mixed")
+        << u"en-FO"_s << QLocale::English
+        << QStringList{u"en-FO"_s, u"en-Latn-FO"_s, u"en-DK"_s, u"en-Latn-DK"_s,
+                       u"en-GB"_s, u"en-Latn-GB"_s,
+                       u"fo-FO"_s, u"fo-Latn-FO"_s, u"fo"_s,
+                       u"da-FO"_s, u"da-Latn-FO"_s, u"da-DK"_s, u"da-Latn-DK"_s, u"da"_s,
+                       // Fallbacks implied by those:
+                       u"en-Latn"_s, u"en"_s, u"fo-Latn"_s, u"da-Latn"_s};
+    QTest::newRow("polylingual-CA")
+        << u"de-CA"_s << QLocale::German
+        << QStringList{u"de-CA"_s, u"de-Latn-CA"_s, u"en-CA"_s, u"en-Latn-CA"_s,
+                       u"fr-CA"_s, u"fr-Latn-CA"_s, u"de-AT"_s, u"de-Latn-AT"_s,
+                       u"en-GB"_s, u"en-Latn-GB"_s, u"fr-FR"_s, u"fr-Latn-FR"_s, u"fr"_s,
+                       // Fallbacks:
+                       u"de-Latn"_s, u"de"_s, u"en-Latn"_s, u"en"_s, u"fr-Latn"_s};
 
     QTest::newRow("und-US")
-        << QString("und-US") << QLocale::C
-        << QStringList{QStringLiteral("und-US"), QStringLiteral("C")};
-
+        << u"und-US"_s << QLocale::C
+        << QStringList{u"und-US"_s, u"C"_s};
     QTest::newRow("und-Latn")
-        << QString("und-Latn") << QLocale::C
-        << QStringList{QStringLiteral("und-Latn"), QStringLiteral("C")};
+        << u"und-Latn"_s << QLocale::C
+        << QStringList{u"und-Latn"_s, u"C"_s};
 
     // TODO: test actual system backends correctly handle locales with
     // script-specificity (script listed first is the default, in CLDR v40):
@@ -4165,16 +4232,22 @@ void tst_QLocale::mySystemLocale()
     QFETCH(QLocale::Language, language);
     QFETCH(QStringList, uiLanguages);
 
+    const QLocale::NumberOptions eno
+        = language == QLocale::C ? QLocale::OmitGroupSeparator : QLocale::DefaultNumberOptions;
+
     {
         MySystemLocale sLocale(name);
         QCOMPARE(QLocale().language(), language);
-        QCOMPARE(QLocale::system().language(), language);
+        const QLocale sys = QLocale::system();
+        QCOMPARE(sys.language(), language);
         auto reporter = qScopeGuard([]() {
-            qDebug("\n\t%s", qPrintable(QLocale::system().uiLanguages().join(u"\n\t")));
+            qDebug("Actual entries:\n\t%s",
+                   qPrintable(QLocale::system().uiLanguages().join(u"\n\t")));
         });
-        QCOMPARE(QLocale::system().uiLanguages(), uiLanguages);
-        QCOMPARE(QLocale::system().uiLanguages(QLocale::TagSeparator::Underscore),
+        QCOMPARE(sys.uiLanguages(), uiLanguages);
+        QCOMPARE(sys.uiLanguages(QLocale::TagSeparator::Underscore),
                  uiLanguages.replaceInStrings(u"-", u"_"));
+        QCOMPARE(sys.numberOptions(), eno);
         reporter.dismiss();
     }
 

@@ -15,10 +15,11 @@
 #include "qdatastream.h"
 #include "qendian.h"
 #include "qfile.h"
-#include "qmap.h"
 #include "qalgorithms.h"
 #include "qtranslator_p.h"
 #include "qlocale.h"
+#include "qlogging.h"
+#include "qdebug.h"
 #include "qendian.h"
 #include "qresource.h"
 
@@ -38,6 +39,8 @@
 #include <memory>
 
 QT_BEGIN_NAMESPACE
+
+Q_STATIC_LOGGING_CATEGORY(lcTranslator, "qt.core.qtranslator")
 
 namespace {
 enum Tag { Tag_End = 1, Tag_SourceText16, Tag_Translation, Tag_Context16, Tag_Obsolete1,
@@ -474,12 +477,9 @@ bool QTranslator::load(const QString & filename, const QString & directory,
         if (fi.isReadable() && fi.isFile())
             break;
 
-        int rightmost = 0;
-        for (int i = 0; i < (int)delims.size(); i++) {
-            int k = fname.lastIndexOf(delims[i]);
-            if (k > rightmost)
-                rightmost = k;
-        }
+        qsizetype rightmost = 0;
+        for (auto ch : delims)
+            rightmost = std::max(rightmost, fname.lastIndexOf(ch));
 
         // no truncations? fail
         if (rightmost == 0)
@@ -600,7 +600,10 @@ Q_NEVER_INLINE
 static bool is_readable_file(const QString &name)
 {
     const QFileInfo fi(name);
-    return fi.isReadable() && fi.isFile();
+    const bool isReadableFile = fi.isReadable() && fi.isFile();
+    qCDebug(lcTranslator) << "Testing file" << name << isReadableFile;
+
+    return isReadableFile;
 }
 
 static QString find_translation(const QLocale & locale,
@@ -609,6 +612,9 @@ static QString find_translation(const QLocale & locale,
                                 const QString & directory,
                                 const QString & suffix)
 {
+    qCDebug(lcTranslator).noquote().nospace() << "Searching translation for "
+                          << filename << prefix << locale << suffix
+                          << " in " << directory;
     QString path;
     if (QFileInfo(filename).isRelative()) {
         path = directory;
@@ -619,63 +625,45 @@ static QString find_translation(const QLocale & locale,
 
     QString realname;
     realname += path + filename + prefix; // using += in the hope for some reserve capacity
-    const int realNameBaseSize = realname.size();
+    const qsizetype realNameBaseSize = realname.size();
 
     // see http://www.unicode.org/reports/tr35/#LanguageMatching for inspiration
 
-    // For each language_country returned by locale.uiLanguages(), add
-    // also a lowercase version to the list. Since these languages are
-    // used to create file names, this is important on case-sensitive
-    // file systems, where otherwise a file called something like
-    // "prefix_en_us.qm" won't be found under the "en_US" locale. Note
-    // that the Qt resource system is always case-sensitive, even on
-    // Windows (in other words: this codepath is *not* UNIX-only).
-    QStringList languages = locale.uiLanguages(QLocale::TagSeparator::Underscore);
-    for (int i = languages.size()-1; i >= 0; --i) {
-        QString lang = languages.at(i);
-        QString lowerLang = lang.toLower();
-        if (lang != lowerLang)
-            languages.insert(i + 1, lowerLang);
-    }
+    // For each name returned by locale.uiLanguages(), also try a lowercase
+    // version. Since these languages are used to create file names, this is
+    // important on case-sensitive file systems, where otherwise a file called
+    // something like "prefix_en_us.qm" won't be found under the "en_US"
+    // locale. Note that the Qt resource system is always case-sensitive, even
+    // on Windows (in other words: this codepath is *not* UNIX-only).
+    const QStringList languages = locale.uiLanguages(QLocale::TagSeparator::Underscore);
+    qCDebug(lcTranslator) << "Requested UI languages" << languages;
 
-    QStringList candidates;
-    // assume 3 segments for each entry
-    candidates.reserve(languages.size() * 3);
-    for (QStringView language : std::as_const(languages)) {
-        // for each language, add versions without territory and script
-        for (;;) {
-            candidates += language.toString();
-            int rightmost = language.lastIndexOf(u'_');
-            if (rightmost <= 0)
+    for (const QString &localeName : languages) {
+        QString loc = localeName;
+        // First try this given name, then in lower-case form (if different):
+        while (true) {
+            // First, try with suffix:
+            realname += loc + suffixOrDotQM;
+            if (is_readable_file(realname))
+                return realname;
+
+            // Next, try without:
+            realname.truncate(realNameBaseSize + loc.size());
+            if (is_readable_file(realname))
+                return realname;
+            // Reset realname:
+            realname.truncate(realNameBaseSize);
+
+            // Non-trivial while-loop condition:
+            if (loc != localeName) // loc was the lower-case form, we're done.
                 break;
-            language.truncate(rightmost);
+            loc = std::move(loc).toLower(); // Try lower-case next,
+            if (loc == localeName) // but only if different.
+                break;
         }
     }
 
-    // now sort the list of candidates
-    std::sort(candidates.begin(), candidates.end(), [](const auto &lhs, const auto &rhs){
-        const auto rhsSegments = rhs.count(u'_');
-        const auto lhsSegments = lhs.count(u'_');
-        // candidates with more segments come first
-        if (rhsSegments != lhsSegments)
-            return rhsSegments < lhsSegments;
-        // candidates with same number of segments are sorted alphanumerically
-        return lhs < rhs;
-    });
-
-    for (const QString &localeName : std::as_const(candidates)) {
-        realname += localeName + suffixOrDotQM;
-        if (is_readable_file(realname))
-            return realname;
-
-        realname.truncate(realNameBaseSize + localeName.size());
-        if (is_readable_file(realname))
-            return realname;
-
-        realname.truncate(realNameBaseSize);
-    }
-
-    const int realNameBaseSizeFallbacks = path.size() + filename.size();
+    const qsizetype realNameBaseSizeFallbacks = path.size() + filename.size();
 
     // realname == path + filename + prefix;
     if (!suffix.isNull()) {

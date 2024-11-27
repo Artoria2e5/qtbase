@@ -27,7 +27,12 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <set>
+#include <tuple>
+#include <QtCore/q20type_traits.h>
 #include <utility>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if !defined(QT_LEAN_HEADERS) || QT_LEAN_HEADERS < 1
@@ -82,6 +87,11 @@ class QT6_ONLY(Q_CORE_EXPORT) QDebug : public QIODeviceBase
     QT7_ONLY(Q_CORE_EXPORT) void putUInt128(const void *i);
     QT7_ONLY(Q_CORE_EXPORT) void putQtOrdering(QtOrderingPrivate::QtOrderingTypeFlag flags,
                                                Qt::partial_ordering order);
+
+    template <typename...Ts>
+    using if_streamable = std::enable_if_t<
+            std::conjunction_v<QTypeTraits::has_ostream_operator<QDebug, Ts>...>
+        , bool>;
 public:
     explicit QDebug(QIODevice *device) : stream(new Stream(device)) {}
     explicit QDebug(QString *string) : stream(new Stream(string)) {}
@@ -241,6 +251,32 @@ private:
     using StreamTypeErased = void(*)(QDebug&, const void*);
     QT7_ONLY(Q_CORE_EXPORT) static QString toStringImpl(StreamTypeErased s, const void *obj);
     QT7_ONLY(Q_CORE_EXPORT) static QByteArray toBytesImpl(StreamTypeErased s, const void *obj);
+    QT7_ONLY(Q_CORE_EXPORT) QDebug &putTupleLikeImplImpl(const char *ns, const char *what, size_t n,
+                                                         StreamTypeErased *ops, const void **data);
+
+    template <typename TupleLike, size_t...Is>
+    QDebug &putTupleLikeImpl(const char *ns, const char *what, const TupleLike &t,
+                             std::index_sequence<Is...>)
+    {
+        if constexpr (sizeof...(Is)) {
+            StreamTypeErased ops[] = {
+                &streamTypeErased<q20::remove_cvref_t<std::tuple_element_t<Is, TupleLike>>>...
+            };
+            const void *data[] = {
+                std::addressof(std::get<Is>(t))...
+            };
+            return putTupleLikeImplImpl(ns, what, sizeof...(Is), ops, data);
+        } else {
+            return putTupleLikeImplImpl(ns, what, 0, nullptr, nullptr);
+        }
+    }
+
+    template <typename TupleLike>
+    QDebug &putTupleLike(const char *ns, const char *what, const TupleLike &t)
+    {
+        using Indexes = std::make_index_sequence<std::tuple_size_v<TupleLike>>;
+        return putTupleLikeImpl(ns, what, t, Indexes{});
+    }
 public:
     template <typename T>
     static QString toString(const T &object)
@@ -252,6 +288,12 @@ public:
     static QByteArray toBytes(const T &object)
     {
         return toBytesImpl(&streamTypeErased<T>, std::addressof(object));
+    }
+
+    template <typename...Ts, if_streamable<Ts...> = true>
+    QDebug &operator<<(const std::tuple<Ts...> &t)
+    {
+        return putTupleLike("std", "tuple", t);
     }
 
 private:
@@ -397,6 +439,30 @@ inline QDebugIfHasDebugStream<Key, T> operator<<(QDebug debug, const std::multim
     return QtPrivate::printSequentialContainer(std::move(debug), "std::multimap", map); // yes, sequential: *it is std::pair
 }
 
+template <typename Key, typename Compare, typename Alloc>
+inline QDebug operator<<(QDebug debug, const std::multiset<Key, Compare, Alloc> &multiset)
+{
+    return QtPrivate::printSequentialContainer(std::move(debug), "std::multiset", multiset);
+}
+
+template <typename Key, typename Compare, typename Alloc>
+inline QDebug operator<<(QDebug debug, const std::set<Key, Compare, Alloc>& set)
+{
+    return QtPrivate::printSequentialContainer(std::move(debug), "std::set", set);
+}
+
+template <typename Key, typename T, typename Hash, typename KeyEqual, typename Alloc>
+inline QDebug operator<<(QDebug debug, const std::unordered_map<Key, T, Hash, KeyEqual, Alloc> &unordered_map)
+{
+    return QtPrivate::printSequentialContainer(std::move(debug), "std::unordered_map", unordered_map); // yes, sequential: *it is std::pair
+}
+
+template <typename Key, typename Hash, typename KeyEqual, typename Alloc>
+inline QDebug operator<<(QDebug debug, const std::unordered_set<Key, Hash, KeyEqual, Alloc>& unordered_set)
+{
+    return QtPrivate::printSequentialContainer(std::move(debug), "std::unordered_set", unordered_set);
+}
+
 template <class Key, class T>
 inline QDebugIfHasDebugStreamContainer<QMap<Key, T>, Key, T> operator<<(QDebug debug, const QMap<Key, T> &map)
 {
@@ -424,11 +490,10 @@ inline QDebugIfHasDebugStreamContainer<QMultiHash<Key, T>, Key, T> operator<<(QD
 template <class T>
 inline QDebugIfHasDebugStream<T> operator<<(QDebug debug, const std::optional<T> &opt)
 {
-    const QDebugStateSaver saver(debug);
     if (!opt)
-        debug.nospace() << std::nullopt;
-    else
-        debug.nospace() << "std::optional(" << *opt << ')';
+        return debug << std::nullopt;
+    const QDebugStateSaver saver(debug);
+    debug.nospace() << "std::optional(" << *opt << ')';
     return debug;
 }
 
@@ -436,7 +501,7 @@ template <class T1, class T2>
 inline QDebugIfHasDebugStream<T1, T2> operator<<(QDebug debug, const std::pair<T1, T2> &pair)
 {
     const QDebugStateSaver saver(debug);
-    debug.nospace() << "std::pair(" << pair.first << ',' << pair.second << ')';
+    debug.nospace() << "std::pair(" << pair.first << ", " << pair.second << ')';
     return debug;
 }
 
@@ -526,6 +591,7 @@ inline QDebug operator<<(QDebug debug, const QTaggedPointer<T, Tag> &ptr)
 Q_CORE_EXPORT QDebug qt_QMetaEnum_debugOperator(QDebug&, qint64 value, const QMetaObject *meta, const char *name);
 Q_CORE_EXPORT QDebug qt_QMetaEnum_flagDebugOperator(QDebug &dbg, quint64 value, const QMetaObject *meta, const char *name);
 Q_CORE_EXPORT void qt_QMetaEnum_flagDebugOperator(QDebug &debug, size_t sizeofT, uint value);
+Q_CORE_EXPORT void qt_QMetaEnum_flagDebugOperator(QDebug &debug, size_t sizeofT, quint64 value);
 
 template <typename Int>
 void qt_QMetaEnum_flagDebugOperator(QDebug &debug, size_t sizeofT, Int value)
@@ -556,9 +622,13 @@ inline QDebug operator<<(QDebug debug, Flags flags)
     using UInt = typename QIntegerForSizeof<T>::Unsigned;
 #if !defined(QT_NO_QOBJECT)
     if constexpr (QtPrivate::IsQEnumHelper<T>::Value || QtPrivate::IsQEnumHelper<Flags>::Value) {
+        // if QFlags<T> is a Q_FLAG, we always zero-extend; if not, we need to
+        // allow it to sign-extend if it is signed (see QMetaEnum::valueToKeys)
+        using Int = std::conditional_t<QtPrivate::IsQEnumHelper<Flags>::Value, UInt,
+                                       std::underlying_type_t<T>>;
         const QMetaObject *obj = qt_getEnumMetaObject(T());
         const char *name = qt_getEnumName(T());
-        return qt_QMetaEnum_flagDebugOperator(debug, UInt(flags.toInt()), obj, name);
+        return qt_QMetaEnum_flagDebugOperator(debug, Int(flags.toInt()), obj, name);
     } else
 #endif
     {
@@ -579,7 +649,7 @@ inline QDebug operator<<(QDebug debug, Flags flags)
 // mutually exclusive.
 
 namespace QtPrivate {
-template <typename T, bool IsEnum = std::is_enum_v<T>, bool SizedForQFlags = sizeof(T) <= 4>
+template <typename T, bool IsEnum = std::is_enum_v<T>, bool = sizeof(T) <= sizeof(quint64)>
 struct EnumHasQFlag { static constexpr bool Value = false; };
 template <typename T> struct EnumHasQFlag<T, true, true> : QtPrivate::IsQEnumHelper<QFlags<T>> {};
 

@@ -13,7 +13,6 @@
 #endif
 #include "qmetaobject.h"
 #include <private/qproperty_p.h>
-#include "qcorecmdlineargs_p.h"
 #include <qdatastream.h>
 #include <qdebug.h>
 #include <qdir.h>
@@ -43,6 +42,7 @@
 #include <private/qlocale_p.h>
 #include <private/qlocking_p.h>
 #include <private/qhooks_p.h>
+#include <private/qnativeinterface_p.h>
 
 #if QT_CONFIG(permissions)
 #include <private/qpermissions_p.h>
@@ -109,6 +109,10 @@
 #include <memory>
 #include <string>
 
+#ifdef Q_OS_WIN
+#  include <qt_windows.h>
+#endif
+
 QT_BEGIN_NAMESPACE
 
 #ifndef QT_NO_QOBJECT
@@ -135,6 +139,16 @@ extern QString qAppFileName();
 #endif
 
 Q_CONSTINIT bool QCoreApplicationPrivate::setuidAllowed = false;
+
+#if QT_VERSION >= QT_VERSION_CHECK(7, 0, 0)
+# warning "Audit remaining direct usages of this variable for memory ordering semantics"
+Q_CONSTINIT QBasicAtomicPointer<QCoreApplication> QCoreApplication::self = nullptr;
+#else
+Q_CONSTINIT QCoreApplication *QCoreApplication::self = nullptr;
+Q_CONSTINIT static QBasicAtomicPointer<QCoreApplication> g_self = nullptr;
+#  undef qApp
+#  define qApp g_self.loadRelaxed()
+#endif
 
 #if !defined(Q_OS_WIN)
 #ifdef Q_OS_DARWIN
@@ -195,7 +209,7 @@ Q_CONSTINIT QString *QCoreApplicationPrivate::cachedApplicationFilePath = nullpt
 
 bool QCoreApplicationPrivate::checkInstance(const char *function)
 {
-    bool b = (QCoreApplication::self != nullptr);
+    bool b = (qApp != nullptr);
     if (!b)
         qWarning("QApplication::%s: Please instantiate the QApplication object first", function);
     return b;
@@ -355,24 +369,15 @@ Q_CONSTINIT QAbstractEventDispatcher *QCoreApplicationPrivate::eventDispatcher =
 
 #endif // QT_NO_QOBJECT
 
-Q_CONSTINIT QCoreApplication *QCoreApplication::self = nullptr;
 Q_CONSTINIT uint QCoreApplicationPrivate::attribs =
     (1 << Qt::AA_SynthesizeMouseForUnhandledTouchEvents) |
     (1 << Qt::AA_SynthesizeMouseForUnhandledTabletEvents);
 
-struct QCoreApplicationData {
+struct QCoreApplicationData
+{
     QCoreApplicationData() noexcept {
         applicationNameSet = false;
         applicationVersionSet = false;
-    }
-    ~QCoreApplicationData() {
-#ifndef QT_NO_QOBJECT
-        // cleanup the QAdoptedThread created for the main() thread
-        if (auto *t = QCoreApplicationPrivate::theMainThread.loadAcquire()) {
-            QThreadData *data = QThreadData::get2(t);
-            data->deref(); // deletes the data and the adopted thread
-        }
-#endif
     }
 
     QString orgName, orgDomain;
@@ -477,8 +482,7 @@ QCoreApplicationPrivate::~QCoreApplicationPrivate()
 #endif
 #if defined(Q_OS_WIN)
     delete [] origArgv;
-    if (consoleAllocated)
-        FreeConsole();
+    cleanupDebuggingConsole();
 #endif
     QCoreApplicationPrivate::clearApplicationFilePath();
 }
@@ -532,14 +536,6 @@ QThread *QCoreApplicationPrivate::mainThread()
     return theMainThread.loadRelaxed();
 }
 
-bool QCoreApplicationPrivate::threadRequiresCoreApplication()
-{
-    QThreadData *data = QThreadData::current(false);
-    if (!data)
-        return true;    // default setting
-    return data->requiresCoreApplication;
-}
-
 void QCoreApplicationPrivate::checkReceiverThread(QObject *receiver)
 {
     QThread *currentThread = QThread::currentThread();
@@ -574,57 +570,6 @@ QString qAppName()
     if (!QCoreApplicationPrivate::checkInstance("qAppName"))
         return QString();
     return QCoreApplication::instance()->d_func()->appName();
-}
-
-#ifdef Q_OS_WINDOWS
-// Return true if we could determine that the current process was linked with /SUBSYSTEM:CONSOLE.
-// Return false otherwise.
-static bool isConsoleApplication()
-{
-    auto dosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(GetModuleHandle(nullptr));
-    if (!dosHeader || dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
-        return false;
-    auto dosHeaderAddr = reinterpret_cast<PBYTE>(dosHeader);
-    auto ntHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(dosHeaderAddr + dosHeader->e_lfanew);
-    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE)
-        return false;
-    return ntHeaders->OptionalHeader.Subsystem == IMAGE_SUBSYSTEM_WINDOWS_CUI;
-}
-#endif
-
-void QCoreApplicationPrivate::initConsole()
-{
-#ifdef Q_OS_WINDOWS
-    if (isConsoleApplication())
-        return;
-    const QString env = qEnvironmentVariable("QT_WIN_DEBUG_CONSOLE");
-    if (env.isEmpty())
-        return;
-    if (env.compare(u"new"_s, Qt::CaseInsensitive) == 0) {
-        if (AllocConsole() == FALSE)
-            return;
-        consoleAllocated = true;
-    } else if (env.compare(u"attach"_s, Qt::CaseInsensitive) == 0) {
-        // If the calling process is already attached to a console,
-        // the error code returned is ERROR_ACCESS_DENIED.
-        if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::GetLastError() != ERROR_ACCESS_DENIED)
-            return;
-    } else {
-        // Unknown input, don't make any decision for the user.
-        return;
-    }
-    // The std{in,out,err} handles are read-only, so we need to pass in dummies.
-    FILE *in = nullptr;
-    FILE *out = nullptr;
-    FILE *err = nullptr;
-    freopen_s(&in, "CONIN$", "r", stdin);
-    freopen_s(&out, "CONOUT$", "w", stdout);
-    freopen_s(&err, "CONOUT$", "w", stderr);
-    // However, things wouldn't work if the runtime did not preserve the pointers.
-    Q_ASSERT(in == stdin);
-    Q_ASSERT(out == stdout);
-    Q_ASSERT(err == stderr);
-#endif
 }
 
 void QCoreApplicationPrivate::initLocale()
@@ -857,12 +802,19 @@ void Q_TRACE_INSTRUMENT(qtcore) QCoreApplicationPrivate::init()
 
     Q_Q(QCoreApplication);
 
-    initConsole();
+#ifdef Q_OS_WINDOWS
+    initDebuggingConsole();
+#endif
 
     initLocale();
 
     Q_ASSERT_X(!QCoreApplication::self, "QCoreApplication", "there should be only one application object");
+#if QT_VERSION < QT_VERSION_CHECK(7, 0, 0)
     QCoreApplication::self = q;
+    g_self.storeRelaxed(q);
+#else
+    QCoreApplication::self.storeRelaxed(q);
+#endif
 
 #if QT_CONFIG(thread)
 #ifdef Q_OS_WASM
@@ -963,7 +915,13 @@ QCoreApplication::~QCoreApplication()
 
     qt_call_post_routines();
 
+#if QT_VERSION < QT_VERSION_CHECK(7, 0, 0)
     self = nullptr;
+    g_self.storeRelaxed(nullptr);
+#else
+    self.storeRelaxed(nullptr);
+#endif
+
 #ifndef QT_NO_QOBJECT
     QCoreApplicationPrivate::is_app_closing = true;
     QCoreApplicationPrivate::is_app_running = false;
@@ -1141,8 +1099,14 @@ void QCoreApplication::setQuitLockEnabled(bool enabled)
 */
 bool QCoreApplication::notifyInternal2(QObject *receiver, QEvent *event)
 {
-    bool selfRequired = QCoreApplicationPrivate::threadRequiresCoreApplication();
-    if (selfRequired && !self)
+    // Qt enforces the rule that events can only be sent to objects in
+    // the current thread, so receiver->d_func()->threadData is
+    // equivalent to QThreadData::current(), just without the function
+    // call overhead.
+    QObjectPrivate *d = receiver->d_func();
+    QThreadData *threadData = d->threadData.loadAcquire();
+    bool selfRequired = threadData->requiresCoreApplication;
+    if (selfRequired && !qApp)
         return false;
 
     // Make it possible for Qt Script to hook into events even
@@ -1153,21 +1117,15 @@ bool QCoreApplication::notifyInternal2(QObject *receiver, QEvent *event)
         return result;
     }
 
-    // Qt enforces the rule that events can only be sent to objects in
-    // the current thread, so receiver->d_func()->threadData is
-    // equivalent to QThreadData::current(), just without the function
-    // call overhead.
-    QObjectPrivate *d = receiver->d_func();
-    QThreadData *threadData = d->threadData.loadAcquire();
     QScopedScopeLevelCounter scopeLevelCounter(threadData);
     if (!selfRequired)
         return doNotify(receiver, event);
 
 #if QT_VERSION >= QT_VERSION_CHECK(7, 0, 0)
-    if (threadData->thread.loadRelaxed() != QCoreApplicationPrivate::mainThread())
+    if (!QThread::isMainThread())
         return false;
 #endif
-    return self->notify(receiver, event);
+    return qApp->notify(receiver, event);
 }
 
 /*!
@@ -1274,7 +1232,7 @@ static bool doNotify(QObject *receiver, QEvent *event)
 bool QCoreApplicationPrivate::sendThroughApplicationEventFilters(QObject *receiver, QEvent *event)
 {
     // We can't access the application event filters outside of the main thread (race conditions)
-    Q_ASSERT(receiver->d_func()->threadData.loadAcquire()->thread.loadRelaxed() == mainThread());
+    Q_ASSERT(QThread::isMainThread());
 
     if (extraData) {
         // application event filters are only called for objects in the GUI thread
@@ -1295,9 +1253,7 @@ bool QCoreApplicationPrivate::sendThroughApplicationEventFilters(QObject *receiv
 
 bool QCoreApplicationPrivate::sendThroughObjectEventFilters(QObject *receiver, QEvent *event)
 {
-    if ((receiver->d_func()->threadData.loadRelaxed()->thread.loadAcquire() != mainThread()
-         || receiver != QCoreApplication::instance())
-        && receiver->d_func()->extraData) {
+    if (receiver != qApp && receiver->d_func()->extraData) {
         for (qsizetype i = 0; i < receiver->d_func()->extraData->eventFilters.size(); ++i) {
             QObject *obj = receiver->d_func()->extraData->eventFilters.at(i);
             if (!obj)
@@ -1328,7 +1284,7 @@ bool QCoreApplicationPrivate::notify_helper(QObject *receiver, QEvent * event)
     Q_TRACE_EXIT(QCoreApplication_notify_exit, consumed, filtered);
 
     // send to all application event filters (only does anything in the main thread)
-    if (receiver->d_func()->threadData.loadRelaxed()->thread.loadAcquire() == mainThread()
+    if (QThread::isMainThread()
             && QCoreApplication::self
             && QCoreApplication::self->d_func()->sendThroughApplicationEventFilters(receiver, event)) {
         filtered = true;
@@ -2192,7 +2148,7 @@ void QCoreApplicationPrivate::quit()
 {
     Q_Q(QCoreApplication);
 
-    if (QThread::currentThread() == mainThread()) {
+    if (QThread::isMainThread()) {
         QEvent quitEvent(QEvent::Quit);
         QCoreApplication::sendEvent(q, &quitEvent);
     } else {
@@ -2455,6 +2411,10 @@ void QCoreApplicationPrivate::setApplicationFilePath(const QString &path)
     the executable, which may be inside an application bundle (if the
     application is bundled).
 
+    On Android this will point to the directory actually containing the
+    executable, which may be inside the application APK (if it was built
+    with uncompressed libraries support).
+
     \warning On Linux, this function will try to get the path from the
     \c {/proc} file system. If that fails, it assumes that \c
     {argv[0]} contains the absolute file name of the executable. The
@@ -2585,6 +2545,27 @@ qint64 QCoreApplication::applicationPid()
 #endif
 }
 
+#ifdef Q_OS_WIN
+static QStringList winCmdArgs()
+{
+    // On Windows, it is possible to pass Unicode arguments on
+    // the command line, but we don't implement any of the wide
+    // entry-points (wmain/wWinMain), so get the arguments from
+    // the Windows API instead of using argv. Note that we only
+    // do this when argv were not modified by the user in main().
+    QStringList result;
+    int size;
+    if (wchar_t **argv = CommandLineToArgvW(GetCommandLine(), &size)) {
+        result.reserve(size);
+        wchar_t **argvEnd = argv + size;
+        for (wchar_t **a = argv; a < argvEnd; ++a)
+            result.append(QString::fromWCharArray(*a));
+        LocalFree(argv);
+    }
+    return result;
+}
+#endif // Q_OS_WIN
+
 /*!
     \since 4.1
 
@@ -2634,13 +2615,7 @@ QStringList QCoreApplication::arguments()
 #if defined(Q_OS_WIN)
     const bool argsModifiedByUser = d->origArgv == nullptr;
     if (!argsModifiedByUser) {
-        // On Windows, it is possible to pass Unicode arguments on
-        // the command line, but we don't implement any of the wide
-        // entry-points (wmain/wWinMain), so get the arguments from
-        // the Windows API instead of using argv. Note that we only
-        // do this when argv were not modified by the user in main().
-        QString cmdline = QString::fromWCharArray(GetCommandLine());
-        QStringList commandLineArguments = qWinCmdArgs(cmdline);
+        QStringList commandLineArguments = winCmdArgs();
 
         // Even if the user didn't modify argv before passing them
         // on to QCoreApplication, derived QApplications might have.
@@ -2936,7 +2911,7 @@ void QCoreApplication::requestPermission(const QPermission &requestedPermission,
     QtPrivate::SlotObjUniquePtr slotObj{slotObjRaw}; // adopts
     Q_ASSERT(slotObj);
 
-    if (QThread::currentThread() != QCoreApplicationPrivate::mainThread()) {
+    if (!QThread::isMainThread()) {
         qCWarning(lcPermissions, "Permissions can only be requested from the GUI (main) thread");
         return;
     }
@@ -3411,6 +3386,16 @@ void QCoreApplication::setEventDispatcher(QAbstractEventDispatcher *eventDispatc
 
 void *QCoreApplication::resolveInterface(const char *name, int revision) const
 {
+#if defined(Q_OS_ANDROID)
+    // The QAndroidApplication is wrongly using static methods for
+    // its native interface (QTBUG-128796). Until we fix that we at
+    // least want the preferred way of resolving a native interface
+    // to work, so provide a minimal subclass of the interface.
+    using namespace QNativeInterface;
+    struct AndroidApplication : public QAndroidApplication {};
+    static AndroidApplication androidApplication;
+    QT_NATIVE_INTERFACE_RETURN_IF(QAndroidApplication, &androidApplication);
+#endif
     Q_UNUSED(name); Q_UNUSED(revision);
     return nullptr;
 }

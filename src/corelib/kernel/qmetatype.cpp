@@ -512,10 +512,6 @@ const char *QtMetaTypePrivate::typedefNameForType(const QtPrivate::QMetaTypeInte
 
     \sa isRegistered()
 */
-bool QMetaType::isValid() const
-{
-    return d_ptr;
-}
 
 /*!
     \fn bool QMetaType::isRegistered() const
@@ -527,10 +523,6 @@ bool QMetaType::isValid() const
 
     \sa qRegisterMetaType(), isValid()
 */
-bool QMetaType::isRegistered() const
-{
-    return d_ptr && d_ptr->typeId.loadRelaxed();
-}
 
 /*!
     \fn int QMetaType::id() const
@@ -1400,10 +1392,12 @@ static constexpr struct : QMetaTypeModuleHelper
             result = QCborArray::fromStringList(source);
             return true;
         );
+#if QT_CONFIG(datestring)
         QMETATYPE_CONVERTER(QCborValue, QDate,
             result = QCborValue(source.startOfDay());
             return true;
         );
+#endif
         QMETATYPE_CONVERTER_ASSIGN(QCborValue, QUrl);
         QMETATYPE_CONVERTER(QCborValue, QJsonValue,
             result = QCborValue::fromJsonValue(source);
@@ -1428,6 +1422,7 @@ static constexpr struct : QMetaTypeModuleHelper
         QMETATYPE_CONVERTER_ASSIGN(QCborValue, QCborMap);
         QMETATYPE_CONVERTER_ASSIGN(QCborValue, QCborArray);
 
+#if QT_CONFIG(datestring)
         QMETATYPE_CONVERTER_ASSIGN(QCborValue, QDateTime);
         QMETATYPE_CONVERTER(QDateTime, QCborValue,
             if (source.isDateTime()) {
@@ -1436,6 +1431,7 @@ static constexpr struct : QMetaTypeModuleHelper
             }
             return false;
         );
+#endif
 
         QMETATYPE_CONVERTER_ASSIGN(QCborValue, QCborSimpleType);
         QMETATYPE_CONVERTER(QCborSimpleType, QCborValue,
@@ -1990,13 +1986,13 @@ static bool convertFromEnum(QMetaType fromType, const void *from, QMetaType toTy
     QMetaEnum en = metaEnumFromType(fromType);
     if (en.isValid()) {
         if (en.isFlag()) {
-            const QByteArray keys = en.valueToKeys(static_cast<int>(ll));
+            const QByteArray keys = en.valueToKeys(ll);
             if (toType.id() == QMetaType::QString)
                 *static_cast<QString *>(to) = QString::fromUtf8(keys);
             else
                 *static_cast<QByteArray *>(to) = keys;
         } else {
-            const char *key = en.valueToKey(static_cast<int>(ll));
+            const char *key = en.valueToKey(ll);
             if (toType.id() == QMetaType::QString)
                 *static_cast<QString *>(to) = QString::fromUtf8(key);
             else
@@ -2022,7 +2018,10 @@ static bool convertToEnum(QMetaType fromType, const void *from, QMetaType toType
             QByteArray keys = (fromTypeId == QMetaType::QString)
                     ? static_cast<const QString *>(from)->toUtf8()
                     : *static_cast<const QByteArray *>(from);
-            value = en.keysToValue(keys.constData(), &ok);
+            if (auto v = en.keysToValue64(keys.constData())) {
+                ok = true;
+                value = *v;
+            }
         }
     }
 #endif
@@ -2998,8 +2997,6 @@ QMetaType QMetaType::underlyingType() const
        differentiate between different underlying types of the
        same size and signedness (consider char <-> (un)signed char,
        int <-> long <-> long long).
-
-       ### TODO PENDING: QTBUG-111926 - QFlags supporting >32 bit int
     */
     if (flags() & IsUnsignedEnumeration) {
         switch (sizeOf()) {

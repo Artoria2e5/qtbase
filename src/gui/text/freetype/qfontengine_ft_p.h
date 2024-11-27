@@ -77,7 +77,6 @@ public:
 
     int getPointInOutline(glyph_t glyph, int flags, quint32 point, QFixed *xpos, QFixed *ypos, quint32 *nPoints);
 
-    bool isScalable() const;
     bool isScalableBitmap() const;
 
     static void addGlyphToPath(FT_Face face, FT_GlyphSlot g, const QFixedPoint &point, QPainterPath *path, FT_Fixed x_scale, FT_Fixed y_scale);
@@ -159,8 +158,9 @@ private:
     QFixed emSquareSize() const override;
     bool supportsHorizontalSubPixelPositions() const override
     {
-        return default_hint_style == HintLight ||
-               default_hint_style == HintNone;
+        return !isColorFont()
+                && (default_hint_style == HintLight ||
+                    default_hint_style == HintNone);
     }
 
     bool supportsVerticalSubPixelPositions() const override

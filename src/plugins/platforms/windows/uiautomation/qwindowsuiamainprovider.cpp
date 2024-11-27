@@ -362,7 +362,7 @@ void QWindowsUiaMainProvider::fillVariantArrayForRelation(QAccessibleInterface* 
 {
     Q_ASSERT(accessible);
 
-    typedef QPair<QAccessibleInterface*, QAccessible::Relation> RelationPair;
+    typedef std::pair<QAccessibleInterface*, QAccessible::Relation> RelationPair;
     const QList<RelationPair> relationInterfaces = accessible->relations(relation);
     if (relationInterfaces.empty())
         return;
@@ -587,6 +587,12 @@ HRESULT QWindowsUiaMainProvider::GetPropertyValue(PROPERTYID idProp, VARIANT *pR
         break;
     case UIA_FullDescriptionPropertyId:
         *pRetVal = QComVariant{ accessible->text(QAccessible::Description) }.release();
+        break;
+    case UIA_LocalizedControlTypePropertyId:
+        // see Core Accessibility API Mappings spec:
+        // https://www.w3.org/TR/core-aam-1.2/#role-map-blockquote
+        if (accessible->role() == QAccessible::BlockQuote)
+            *pRetVal = QComVariant{ tr("blockquote") }.release();
         break;
     case UIA_NamePropertyId: {
         QString name = accessible->text(QAccessible::Name);

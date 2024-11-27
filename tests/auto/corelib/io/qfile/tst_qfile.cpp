@@ -29,6 +29,10 @@
 #include <QtCore/private/qfunctions_win_p.h>
 #endif
 
+#ifdef Q_OS_ANDROID
+#include <QtCore/private/qjnihelpers_p.h>
+#endif
+
 #include <QtTest/private/qemulationdetector_p.h>
 
 #ifdef Q_OS_WIN
@@ -1387,6 +1391,10 @@ void tst_QFile::permissions_data()
 
 #ifndef Q_OS_WASM
     // Application path is empty on wasm
+#ifdef Q_OS_ANDROID
+    // Android in-APK application path doesn't report exec permission
+    if (!QtAndroidPrivate::isUncompressedNativeLibs())
+#endif
     QTest::newRow("data0") << QCoreApplication::instance()->applicationFilePath() << uint(QFile::ExeUser) << true << false;
 #endif
     QTest::newRow("data1") << m_testSourceFile << uint(QFile::ReadUser) << true << false;
@@ -2715,7 +2723,12 @@ void tst_QFile::virtualFile()
         lines += std::move(data);
     }
 
-    if (!QT_CONFIG(static) && !QTestPrivate::isRunningArmOnX86()) {
+    if (!QT_CONFIG(static) && !QTestPrivate::isRunningArmOnX86()
+#ifdef Q_OS_ANDROID
+            // With uncompressed libs, only the app's APK path is shown and no library names.
+            && !QtAndroidPrivate::isUncompressedNativeLibs()
+#endif
+            ) {
         // we must be able to find QtCore and QtTest somewhere
         static const char corelib[] = "libQt" QT_STRINGIFY(QT_VERSION_MAJOR) "Core";
         static const char testlib[] = "libQt" QT_STRINGIFY(QT_VERSION_MAJOR) "Test";
@@ -3603,6 +3616,9 @@ void tst_QFile::openDirectory()
     f1.close();
     QVERIFY(!f1.open(QIODevice::ReadOnly|QIODevice::Unbuffered));
     f1.close();
+#if defined(Q_OS_VXWORKS)
+    QEXPECT_FAIL("", "QTBUG-130074: On VxWorks directories are always openable in a write mode", Abort);
+#endif
     QVERIFY(!f1.open(QIODevice::ReadWrite));
     f1.close();
     QVERIFY(!f1.open(QIODevice::WriteOnly));
@@ -3793,7 +3809,7 @@ void tst_QFile::caseSensitivity()
 #if defined(Q_OS_WIN)
     const bool caseSensitive = false;
 #elif defined(Q_OS_DARWIN)
-     const bool caseSensitive = pathconf(QDir::currentPath().toLatin1().constData(), _PC_CASE_SENSITIVE);
+     const bool caseSensitive = pathconf(QDir::currentPath().toLatin1().constData(), _PC_CASE_SENSITIVE) == 1;
 #else
     const bool caseSensitive = true;
 #endif

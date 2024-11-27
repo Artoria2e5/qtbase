@@ -287,6 +287,64 @@ QT_BEGIN_NAMESPACE
     The VkRenderPass object.
 */
 
+/*!
+    \class QRhiVulkanQueueSubmitParams
+    \inmodule QtGui
+    \since 6.9
+    \brief References additional Vulkan API objects that get passed to \c vkQueueSubmit().
+
+    \note This is a RHI API with limited compatibility guarantees, see \l QRhi
+    for details.
+*/
+
+/*!
+    \variable QRhiVulkanQueueSubmitParams::waitSemaphoreCount
+
+    See
+    \l{https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkSubmitInfo.html}{VkSubmitInfo}
+    for details.
+*/
+
+/*!
+    \variable QRhiVulkanQueueSubmitParams::waitSemaphores
+
+    See
+    \l{https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkSubmitInfo.html}{VkSubmitInfo}
+    for details.
+*/
+
+/*!
+    \variable QRhiVulkanQueueSubmitParams::signalSemaphoreCount
+
+    See
+    \l{https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkSubmitInfo.html}{VkSubmitInfo}
+    for details.
+*/
+
+/*!
+    \variable QRhiVulkanQueueSubmitParams::signalSemaphores
+
+    See
+    \l{https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkSubmitInfo.html}{VkSubmitInfo}
+    for details.
+*/
+
+/*!
+    \variable QRhiVulkanQueueSubmitParams::presentWaitSemaphoreCount
+
+    When non-zero, this applies to the next \c vkQueuePresentKHR() call. See
+    \l{https://registry.khronos.org/VulkanSC/specs/1.0-extensions/man/html/VkPresentInfoKHR.html}{VkPresentInfoKHR}
+    for details.
+*/
+
+/*!
+    \variable QRhiVulkanQueueSubmitParams::presentWaitSemaphores
+
+    See
+    \l{https://registry.khronos.org/VulkanSC/specs/1.0-extensions/man/html/VkPresentInfoKHR.html}{VkPresentInfoKHR}
+    for details.
+ */
+
 template <class Int>
 inline Int aligned(Int v, Int byteAlign)
 {
@@ -1133,6 +1191,12 @@ static inline VkFormat toVkTextureFormat(QRhiTexture::Format format, QRhiTexture
 
     case QRhiTexture::R8UI:
         return VK_FORMAT_R8_UINT;
+    case QRhiTexture::R32UI:
+        return VK_FORMAT_R32_UINT;
+    case QRhiTexture::RG32UI:
+        return VK_FORMAT_R32G32_UINT;
+    case QRhiTexture::RGBA32UI:
+        return VK_FORMAT_R32G32B32A32_UINT;
 
     case QRhiTexture::D16:
         return VK_FORMAT_D16_UNORM;
@@ -1244,9 +1308,28 @@ static constexpr inline bool isDepthTextureFormat(QRhiTexture::Format format)
     }
 }
 
+static constexpr inline bool isStencilTextureFormat(QRhiTexture::Format format)
+{
+    switch (format) {
+    case QRhiTexture::Format::D24S8:
+    case QRhiTexture::Format::D32FS8:
+        return true;
+
+    default:
+        return false;
+    }
+}
+
 static constexpr inline VkImageAspectFlags aspectMaskForTextureFormat(QRhiTexture::Format format)
 {
-    return isDepthTextureFormat(format) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    if (isDepthTextureFormat(format)) {
+        if (isStencilTextureFormat(format))
+            return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        else
+            return VK_IMAGE_ASPECT_DEPTH_BIT;
+    } else {
+        return VK_IMAGE_ASPECT_COLOR_BIT;
+    }
 }
 
 // Transient images ("render buffers") backed by lazily allocated memory are
@@ -2543,14 +2626,16 @@ QRhi::FrameOpResult QRhiVulkan::endFrame(QRhiSwapChain *swapChain, QRhi::EndFram
         presInfo.swapchainCount = 1;
         presInfo.pSwapchains = &swapChainD->sc;
         presInfo.pImageIndices = &swapChainD->currentImageIndex;
-        presInfo.waitSemaphoreCount = 1;
-        presInfo.pWaitSemaphores = &frame.drawSem; // gfxQueueFamilyIdx == presQueueFamilyIdx ? &frame.drawSem : &frame.presTransSem;
+        waitSemaphoresForPresent.append(frame.drawSem);
+        presInfo.waitSemaphoreCount = uint32_t(waitSemaphoresForPresent.count());;
+        presInfo.pWaitSemaphores = waitSemaphoresForPresent.constData();
 
         // Do platform-specific WM notification. F.ex. essential on Wayland in
         // order to circumvent driver frame callbacks
         inst->presentAboutToBeQueued(swapChainD->window);
 
         VkResult err = vkQueuePresentKHR(gfxQueue, &presInfo);
+        waitSemaphoresForPresent.clear();
         if (err != VK_SUCCESS) {
             if (err == VK_ERROR_OUT_OF_DATE_KHR) {
                 return QRhi::FrameOpSwapChainOutOfDate;
@@ -2659,18 +2744,29 @@ QRhi::FrameOpResult QRhiVulkan::endAndSubmitPrimaryCommandBuffer(VkCommandBuffer
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cb;
-    if (waitSem) {
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = waitSem;
+
+    if (waitSem)
+        waitSemaphoresForQueueSubmit.append(*waitSem);
+    if (signalSem)
+        signalSemaphoresForQueueSubmit.append(*signalSem);
+
+    if (!waitSemaphoresForQueueSubmit.isEmpty()) {
+        submitInfo.waitSemaphoreCount = uint32_t(waitSemaphoresForQueueSubmit.count());
+        submitInfo.pWaitSemaphores = waitSemaphoresForQueueSubmit.constData();
     }
-    if (signalSem) {
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = signalSem;
+    if (!signalSemaphoresForQueueSubmit.isEmpty()) {
+        submitInfo.signalSemaphoreCount = uint32_t(signalSemaphoresForQueueSubmit.count());
+        submitInfo.pSignalSemaphores = signalSemaphoresForQueueSubmit.constData();
     }
+
     VkPipelineStageFlags psf = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     submitInfo.pWaitDstStageMask = &psf;
 
     err = df->vkQueueSubmit(gfxQueue, 1, &submitInfo, cmdFence);
+
+    waitSemaphoresForQueueSubmit.clear();
+    signalSemaphoresForQueueSubmit.clear();
+
     if (err != VK_SUCCESS) {
         if (err == VK_ERROR_DEVICE_LOST) {
             qWarning("Device loss detected in vkQueueSubmit()");
@@ -5112,6 +5208,8 @@ bool QRhiVulkan::isFeatureSupported(QRhi::Feature feature) const
     case QRhi::VariableRateShadingMap:
     case QRhi::VariableRateShadingMapWithTexture:
         return caps.renderPass2KHR && caps.imageBasedShadingRate;
+    case QRhi::PerRenderTargetBlending:
+        return true;
     default:
         Q_UNREACHABLE_RETURN(false);
     }
@@ -5191,6 +5289,25 @@ bool QRhiVulkan::makeThreadLocalNativeContextCurrent()
 {
     // not applicable
     return false;
+}
+
+void QRhiVulkan::setQueueSubmitParams(QRhiNativeHandles *params)
+{
+    QRhiVulkanQueueSubmitParams *sp = static_cast<QRhiVulkanQueueSubmitParams *>(params);
+    if (!sp)
+        return;
+
+    waitSemaphoresForQueueSubmit.clear();
+    if (sp->waitSemaphoreCount)
+        waitSemaphoresForQueueSubmit.append(sp->waitSemaphores, sp->waitSemaphoreCount);
+
+    signalSemaphoresForQueueSubmit.clear();
+    if (sp->signalSemaphoreCount)
+        signalSemaphoresForQueueSubmit.append(sp->signalSemaphores, sp->signalSemaphoreCount);
+
+    waitSemaphoresForPresent.clear();
+    if (sp->presentWaitSemaphoreCount)
+        waitSemaphoresForPresent.append(sp->presentWaitSemaphores, sp->presentWaitSemaphoreCount);
 }
 
 void QRhiVulkan::releaseCachedResources()
@@ -6901,6 +7018,9 @@ bool QVkTexture::finishCreate()
     viewInfo.components.b = VK_COMPONENT_SWIZZLE_B;
     viewInfo.components.a = VK_COMPONENT_SWIZZLE_A;
     viewInfo.subresourceRange.aspectMask = aspectMask;
+    // Force-remove the VK_IMAGE_ASPECT_STENCIL_BIT
+    // Another view with this bit is probably needed for stencil
+    viewInfo.subresourceRange.aspectMask &= ~VK_IMAGE_ASPECT_STENCIL_BIT;
     viewInfo.subresourceRange.levelCount = mipLevelCount;
     if (isArray && m_arrayRangeStart >= 0 && m_arrayRangeLength >= 0) {
         viewInfo.subresourceRange.baseArrayLayer = uint32_t(m_arrayRangeStart);
@@ -7605,7 +7725,7 @@ bool QVkTextureRenderTarget::create()
             viewInfo.components.g = VK_COMPONENT_SWIZZLE_G;
             viewInfo.components.b = VK_COMPONENT_SWIZZLE_B;
             viewInfo.components.a = VK_COMPONENT_SWIZZLE_A;
-            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+            viewInfo.subresourceRange.aspectMask = aspectMaskForTextureFormat(depthTexD->format());
             viewInfo.subresourceRange.levelCount = 1;
             viewInfo.subresourceRange.layerCount = qMax<uint32_t>(1, d.multiViewCount);
             VkResult err = rhiD->df->vkCreateImageView(rhiD->dev, &viewInfo, nullptr, &dsv);
@@ -7678,7 +7798,7 @@ bool QVkTextureRenderTarget::create()
         viewInfo.components.g = VK_COMPONENT_SWIZZLE_G;
         viewInfo.components.b = VK_COMPONENT_SWIZZLE_B;
         viewInfo.components.a = VK_COMPONENT_SWIZZLE_A;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        viewInfo.subresourceRange.aspectMask = aspectMaskForTextureFormat(resTexD->format());
         viewInfo.subresourceRange.baseMipLevel = 0;
         viewInfo.subresourceRange.levelCount = 1;
         viewInfo.subresourceRange.baseArrayLayer = 0;

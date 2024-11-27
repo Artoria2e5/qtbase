@@ -35,12 +35,17 @@ namespace QtTimeZoneLocale {
 #if QT_CONFIG(icu)
 QString ucalTimeZoneDisplayName(UCalendar *ucal, QTimeZone::TimeType timeType,
                                 QTimeZone::NameType nameType,
-                                const QString &localeCode);
+                                const QByteArray &localeCode);
 #else
 
 QList<QByteArrayView> ianaIdsForTerritory(QLocale::Territory territory);
 
 QList<qsizetype> fallbackLocalesFor(qsizetype index); // qlocale.cpp
+
+// Note: "repurposes" QLocale::FormatType with its own twisted meaning.
+// See comments in QTZL.cpp; qlocale.cpp has a fallback implementation.
+QString zoneOffsetFormat(const QLocale &locale, qsizetype locInd, QLocale::FormatType width,
+                         const QDateTime &when, int offsetSeconds);
 
 // Define data types for QTZL_data_p.h
 

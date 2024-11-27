@@ -77,20 +77,26 @@ function(qt_internal_extend_target target)
         endif()
         set(dbus_sources "")
         foreach(adaptor ${arg_DBUS_ADAPTOR_SOURCES})
-            qt_create_qdbusxml2cpp_command("${target}" "${adaptor}"
-                ADAPTOR
-                BASENAME "${arg_DBUS_ADAPTOR_BASENAME}"
-                FLAGS ${arg_DBUS_ADAPTOR_FLAGS}
+            _qt_internal_forward_function_args(
+                FORWARD_PREFIX arg_DBUS_ADAPTOR
+                FORWARD_OUT_VAR forwarded_args
+                FORWARD_SINGLE
+                    BASENAME
+                    FLAGS
             )
+            qt_create_qdbusxml2cpp_command("${target}" "${adaptor}" ADAPTOR ${forwarded_args})
             list(APPEND dbus_sources "${adaptor}")
         endforeach()
 
         foreach(interface ${arg_DBUS_INTERFACE_SOURCES})
-            qt_create_qdbusxml2cpp_command("${target}" "${interface}"
-                INTERFACE
-                BASENAME "${arg_DBUS_INTERFACE_BASENAME}"
-                FLAGS ${arg_DBUS_INTERFACE_FLAGS}
+            _qt_internal_forward_function_args(
+                FORWARD_PREFIX arg_DBUS_INTERFACE
+                FORWARD_OUT_VAR forwarded_args
+                FORWARD_SINGLE
+                    BASENAME
+                    FLAGS
             )
+            qt_create_qdbusxml2cpp_command("${target}" "${interface}" INTERFACE ${forwarded_args})
             list(APPEND dbus_sources "${interface}")
         endforeach()
 
@@ -444,6 +450,9 @@ macro(qt_internal_setup_default_target_function_options)
         DELAY_RC
         DELAY_TARGET_INFO
         QT_APP
+        QT_TEST
+        QT_MANUAL_TEST
+        QT_BENCHMARK_TEST
         NO_UNITY_BUILD
         ${__qt_internal_sbom_optional_args}
     )
@@ -1457,6 +1466,7 @@ function(qt_internal_is_target_skipped_for_examples target out_var)
 endfunction()
 
 function(qt_internal_link_internal_platform_for_object_library target)
+    cmake_parse_arguments(arg "" "PARENT_TARGET" "" ${ARGN})
     # We need to apply iOS bitcode flags to object libraries that are associated with internal
     # modules or plugins (e.g. object libraries added by qt_internal_add_resource,
     # qt_internal_add_plugin, etc.)
@@ -1464,6 +1474,13 @@ function(qt_internal_link_internal_platform_for_object_library target)
     # present by default.
     # Achieve this by compiling the cpp files with the PlatformModuleInternal compile flags.
     target_link_libraries("${target}" PRIVATE Qt::PlatformModuleInternal)
+
+    if(arg_PARENT_TARGET AND TARGET "${arg_PARENT_TARGET}")
+        foreach(property QT_SKIP_WARNINGS_ARE_ERRORS _qt_internal_use_exceptions)
+            set_property(TARGET "${target}" PROPERTY
+                ${property} "$<BOOL:$<TARGET_PROPERTY:${arg_PARENT_TARGET},${property}>>")
+        endforeach()
+    endif()
 endfunction()
 
 # Use ${dep_target}'s include dirs when building ${target}.
